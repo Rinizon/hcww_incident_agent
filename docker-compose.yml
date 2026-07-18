@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   incident-agent:
     build: .
@@ -11,6 +9,6 @@ services:
       HCWW_AGENT_HOST: 0.0.0.0
       HCWW_AGENT_PORT: 8787
     ports:
-      - "127.0.0.1:8787:8787"
+      - "8787:8787"
     volumes:
       - ./data:/app/data

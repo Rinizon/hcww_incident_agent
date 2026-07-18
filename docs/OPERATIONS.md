@@ -210,6 +210,9 @@ curl -s http://127.0.0.1:8787/healthz
 curl -s http://127.0.0.1:8787/schema/webhooks/teams/betterstack
 ```
 
+If the agent must be reachable from another machine on the LAN, publish port `8787`
+on all interfaces rather than only `127.0.0.1`.
+
 ## Operational Guardrails
 
 The current implementation includes:
