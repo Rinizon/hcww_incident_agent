@@ -1,0 +1,509 @@
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from app.classifier import classify_incident
+from app.config import Settings
+from app.diagnostics import DiagnosticEngine
+from app.notifier import TeamsNotifier
+from app.remediation import (
+    CloudflareClient,
+    DeployClient,
+    RealDeployClient,
+    RealCloudflareClient,
+    RemediationEngine,
+    build_cloudflare_client,
+    build_deploy_client,
+)
+from app.server import IncidentAgentApplication
+from app.schema import PayloadValidationError, validation_example_payload
+
+
+class FakeCloudflareClient(CloudflareClient):
+    def __init__(self) -> None:
+        self.calls = []
+
+    def purge_cache(self, urls: list) -> dict:
+        self.calls.append(urls)
+        return {"ok": True, "action": "cache_purge", "urls": urls}
+
+
+class FakeDeployClient(DeployClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def trigger_redeploy(self, incident: dict) -> dict:
+        self.calls += 1
+        return {"ok": True, "action": "redeploy", "incident_id": incident["incident_id"]}
+
+
+class ApplicationTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "agent_state.db")
+        self.settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            teams_post_mode="workflow",
+            teams_webhook_url="",
+            cloudflare_api_token="",
+            cloudflare_account_id="",
+            cloudflare_zone_id="",
+            deploy_base_url="",
+            deploy_api_token="",
+            smoke_check_url="",
+            smoke_check_expected_text="Hill Country Web Works",
+            max_remediation_attempts=2,
+            enable_cache_purge=True,
+            enable_redeploy=True,
+        )
+        self.notifier = TeamsNotifier(settings=self.settings)
+        self.cloudflare = FakeCloudflareClient()
+        self.deploy = FakeDeployClient()
+        self.fetch_calls = {}
+        self.diagnostics = DiagnosticEngine(
+            settings=self.settings,
+            fetch=self.fake_fetch,
+            resolve=self.fake_resolve,
+        )
+        self.remediation = RemediationEngine(
+            settings=self.settings,
+            diagnostics=self.diagnostics,
+            cloudflare=self.cloudflare,
+            deploy=self.deploy,
+        )
+        self.app = IncidentAgentApplication(
+            settings=self.settings,
+            diagnostics=self.diagnostics,
+            notifier=self.notifier,
+            remediation=self.remediation,
+        )
+        self.remediation.store = self.app.store
+
+    def load_fixture(self, name: str) -> dict:
+        fixture_path = Path(__file__).parent / "fixtures" / name
+        return json.loads(fixture_path.read_text())
+
+    def fake_fetch(self, url: str, timeout_seconds: float) -> dict:
+        count = self.fetch_calls.get(url, 0)
+        self.fetch_calls[url] = count + 1
+        if "down" in url and count == 0:
+            raise RuntimeError("HTTP 523 origin is unreachable")
+        if "redeploy-fail" in url:
+            raise RuntimeError("Origin still unavailable")
+        return {
+            "ok": True,
+            "status_code": 200,
+            "body_excerpt": "Hill Country Web Works homepage",
+            "latency_ms": 42,
+        }
+
+    def fake_resolve(self, hostname: str) -> list:
+        if hostname == "dns-fail.hcww.net":
+            raise RuntimeError("Name or service not known")
+        return ["203.0.113.10"]
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_health_endpoint_logic(self) -> None:
+        body = self.app.handle_health()
+
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["checks"]["database"], "ok")
+
+    def test_webhook_persists_incident_and_audit(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        incident = body["incident"]
+        self.assertEqual(incident["current_status"], "resolved")
+        self.assertEqual(incident["betterstack"]["monitor_url"], "https://hcww.net/")
+        self.assertEqual(incident["normalized_severity"], "sev1")
+        self.assertEqual(incident["incident_type"], "edge")
+        self.assertEqual(body["classification"]["normalized_severity"], "sev1")
+        self.assertEqual(len(self.notifier.sent_messages), 3)
+        self.assertEqual(len(incident["action_attempts"]), 0)
+
+        incident_id = incident["incident_id"]
+        incident_lookup = self.app.get_incident(incident_id)
+        self.assertIsNotNone(incident_lookup)
+        self.assertEqual(incident_lookup["external_incident_key"], "incident-789")
+        self.assertEqual(incident_lookup["current_status"], "resolved")
+
+        audit_lookup = self.app.get_incident_audit(incident_id)
+        event_types = [event["event_type"] for event in audit_lookup["audit_events"]]
+        self.assertIn("incident.received", event_types)
+        self.assertIn("incident.triaged", event_types)
+        self.assertIn("incident.diagnosing", event_types)
+        self.assertIn("incident.diagnostics_completed", event_types)
+        self.assertIn("incident.resolved", event_types)
+        self.assertIn("teams.update.acknowledged", event_types)
+        self.assertIn("teams.update.diagnosis", event_types)
+        self.assertIn("teams.update.resolved", event_types)
+
+    def test_webhook_requires_shared_secret_when_configured(self) -> None:
+        payload = validation_example_payload()
+
+        with self.assertRaises(PermissionError):
+            self.app.handle_webhook(
+                headers={},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+
+    def test_webhook_rejects_invalid_payload(self) -> None:
+        payload = validation_example_payload()
+        del payload["teams"]["root_message_id"]
+
+        with self.assertRaises(PayloadValidationError):
+            self.app.handle_webhook(
+                headers={"X-HCWW-Workflow-Secret": "test-secret"},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+
+    def test_classifier_sets_contact_path_to_sev2(self) -> None:
+        payload = self.load_fixture("contact_down.json")
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/contact/"
+        payload["betterstack"]["monitor_name"] = "hcww contact route"
+        payload["betterstack"]["severity"] = ""
+        payload["betterstack"]["alert_type"] = "monitor.down"
+        payload["betterstack"]["raw_body"] = "Contact page is down"
+
+        classification = classify_incident({"betterstack": payload["betterstack"]})
+
+        self.assertEqual(classification["incident_type"], "contact_path")
+        self.assertEqual(classification["normalized_severity"], "sev2")
+        self.assertEqual(classification["current_status"], "triaged")
+
+    def test_classifier_marks_recovery_as_resolved(self) -> None:
+        payload = self.load_fixture("recovery.json")
+
+        classification = classify_incident({"betterstack": payload["betterstack"]})
+
+        self.assertEqual(classification["incident_type"], "recovery")
+        self.assertEqual(classification["normalized_severity"], "sev4")
+        self.assertEqual(classification["current_status"], "resolved")
+
+    def test_webhook_escalates_when_public_checks_fail(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertEqual(body["incident"]["current_status"], "resolved")
+        self.assertEqual(self.notifier.sent_messages[-1]["payload"]["phase"], "resolved")
+        self.assertEqual(len(body["incident"]["action_attempts"]), 1)
+        self.assertEqual(body["incident"]["action_attempts"][0]["playbook_name"], "cloudflare_cache_purge")
+        self.assertEqual(len(self.cloudflare.calls), 1)
+        self.assertEqual(self.deploy.calls, 0)
+
+    def test_webhook_escalates_when_dns_fails(self) -> None:
+        payload = self.load_fixture("dns_failure.json")
+        payload["betterstack"]["monitor_url"] = "https://dns-fail.hcww.net/"
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertEqual(body["incident"]["current_status"], "escalated")
+        self.assertEqual(len(body["incident"]["action_attempts"]), 0)
+
+    def test_webhook_redeploys_when_cache_purge_does_not_recover(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_url"] = "https://redeploy-fail.hcww.net/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertEqual(body["incident"]["current_status"], "escalated")
+        self.assertEqual(len(body["incident"]["action_attempts"]), 2)
+        self.assertEqual(body["incident"]["action_attempts"][0]["playbook_name"], "cloudflare_cache_purge")
+        self.assertEqual(body["incident"]["action_attempts"][1]["playbook_name"], "known_good_redeploy")
+        self.assertEqual(len(self.cloudflare.calls), 1)
+        self.assertEqual(self.deploy.calls, 1)
+
+    def test_duplicate_event_is_ignored(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        first_status, first_body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        second_status, second_body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(first_status, 202)
+        self.assertEqual(second_status, 202)
+        self.assertTrue(second_body["duplicate"])
+        self.assertIsNone(second_body["classification"])
+        self.assertEqual(second_body["incident"]["incident_id"], first_body["incident"]["incident_id"])
+
+    def test_repeated_incident_with_recent_attempts_hits_cooldown(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["event_id"] = "evt_repeat_1"
+        payload["betterstack"]["incident_id"] = "incident-repeat"
+        payload["betterstack"]["monitor_url"] = "https://redeploy-fail.hcww.net/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+        _, first_body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        repeated = json.loads(json.dumps(payload))
+        repeated["event_id"] = "evt_repeat_2"
+        repeated["delivered_at"] = "2026-07-18T12:35:56Z"
+        repeated["betterstack"]["alert_id"] = "alert-repeat-2"
+        _, second_body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(repeated).encode("utf-8"),
+        )
+
+        self.assertEqual(first_body["incident"]["current_status"], "escalated")
+        self.assertEqual(second_body["incident"]["current_status"], "escalated")
+        self.assertEqual(len(second_body["incident"]["action_attempts"]), 2)
+        self.assertEqual(self.deploy.calls, 1)
+
+    def test_real_cloudflare_client_builds_expected_request(self) -> None:
+        captured = {}
+
+        def fake_sender(method: str, url: str, headers: dict, payload: dict) -> dict:
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["payload"] = payload
+            return {
+                "success": True,
+                "result": {"id": "purge-123"},
+                "errors": [],
+                "messages": [],
+                "_http_status": 200,
+            }
+
+        client = RealCloudflareClient(
+            api_base_url="https://api.cloudflare.com/client/v4",
+            api_token="cf-token",
+            zone_id="zone-123",
+            sender=fake_sender,
+        )
+
+        result = client.purge_cache(["https://hcww.net/", "https://hcww.net/contact/"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            captured["url"],
+            "https://api.cloudflare.com/client/v4/zones/zone-123/purge_cache",
+        )
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["payload"]["files"], ["https://hcww.net/", "https://hcww.net/contact/"])
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer cf-token")
+
+    def test_build_cloudflare_client_uses_null_without_credentials(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            cloudflare_api_token="",
+            cloudflare_zone_id="",
+        )
+        client = build_cloudflare_client(settings)
+        result = client.purge_cache(["https://hcww.net/"])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "cloudflare client not configured")
+
+    def test_real_deploy_client_builds_expected_request(self) -> None:
+        captured = {}
+
+        def fake_sender(method: str, url: str, headers: dict, payload: dict) -> dict:
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["payload"] = payload
+            return {
+                "success": True,
+                "result": {"deployment_id": "dep-123"},
+                "errors": [],
+                "messages": [],
+                "_http_status": 202,
+            }
+
+        client = RealDeployClient(
+            base_url="https://deploy.example.com/hooks/redeploy",
+            api_token="deploy-token",
+            mode="api",
+            sender=fake_sender,
+        )
+        incident = {
+            "incident_id": 42,
+            "external_incident_key": "incident-42",
+            "incident_type": "edge",
+            "normalized_severity": "sev1",
+            "betterstack": {
+                "monitor_url": "https://hcww.net/",
+                "monitor_name": "hcww homepage",
+            },
+        }
+
+        result = client.trigger_redeploy(incident)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["url"], "https://deploy.example.com/hooks/redeploy")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer deploy-token")
+        self.assertEqual(captured["payload"]["action"], "redeploy")
+        self.assertEqual(captured["payload"]["incident"]["incident_id"], 42)
+        self.assertEqual(result["http_status"], 202)
+
+    def test_real_deploy_hook_client_omits_bearer_auth(self) -> None:
+        captured = {}
+
+        def fake_sender(method: str, url: str, headers: dict, payload: dict) -> dict:
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["payload"] = payload
+            return {
+                "success": True,
+                "result": {"build_uuid": "build-123"},
+                "errors": [],
+                "messages": [],
+                "_http_status": 200,
+            }
+
+        client = RealDeployClient(
+            base_url="https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/hook-123",
+            mode="deploy_hook",
+            sender=fake_sender,
+        )
+        incident = {
+            "incident_id": 7,
+            "external_incident_key": "incident-7",
+            "incident_type": "edge",
+            "normalized_severity": "sev1",
+            "betterstack": {
+                "monitor_url": "https://hcww.net/",
+                "monitor_name": "hcww homepage",
+            },
+        }
+
+        result = client.trigger_redeploy(incident)
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("Authorization", captured["headers"])
+        self.assertEqual(result["deploy_mode"], "deploy_hook")
+
+    def test_build_deploy_client_uses_real_client_with_credentials(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            deploy_mode="api",
+            deploy_base_url="https://deploy.example.com/hooks/redeploy",
+            deploy_api_token="deploy-token",
+        )
+        client = build_deploy_client(settings)
+        self.assertEqual(type(client).__name__, "RealDeployClient")
+
+    def test_webhook_notifier_sends_text_payload(self) -> None:
+        captured = {}
+
+        def fake_sender(webhook_url: str, payload: dict) -> dict:
+            captured["webhook_url"] = webhook_url
+            captured["payload"] = payload
+            return {"status_code": 202}
+
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            teams_post_mode="webhook",
+            teams_webhook_url="https://workflow.example.test/webhook",
+        )
+        notifier = TeamsNotifier(settings=settings, webhook_sender=fake_sender)
+        incident = {
+            "incident_id": 99,
+            "external_incident_key": "incident-99",
+            "teams": {
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+                "root_message_id": "msg-1",
+            },
+        }
+
+        result = notifier.send_incident_update(
+            incident=incident,
+            phase="diagnosis",
+            message="TEST incident is being diagnosed.",
+            details={"current_status": "diagnosing", "severity": "sev1"},
+        )
+
+        self.assertTrue(result["posted"])
+        self.assertEqual(captured["webhook_url"], "https://workflow.example.test/webhook")
+        self.assertEqual(captured["payload"]["type"], "message")
+        self.assertEqual(len(captured["payload"]["attachments"]), 1)
+        attachment = captured["payload"]["attachments"][0]
+        self.assertEqual(
+            attachment["contentType"],
+            "application/vnd.microsoft.card.adaptive",
+        )
+        body = attachment["content"]["body"]
+        self.assertEqual(body[0]["text"], "HCWW Incident Agent | DIAGNOSIS")
+        self.assertEqual(body[1]["text"], "TEST incident is being diagnosed.")
+        facts = body[2]["facts"]
+        self.assertTrue(any(f["title"] == "Severity" and f["value"] == "sev1" for f in facts))
+
+    def test_build_deploy_client_uses_deploy_hook_without_token(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            deploy_mode="deploy_hook",
+            deploy_base_url="https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/hook-123",
+            deploy_api_token="",
+        )
+        client = build_deploy_client(settings)
+        self.assertEqual(type(client).__name__, "RealDeployClient")

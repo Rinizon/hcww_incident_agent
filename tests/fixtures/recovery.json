@@ -1,0 +1,26 @@
+{
+  "event_id": "evt_recovery_0001",
+  "source": "teams_workflow",
+  "delivered_at": "2026-07-18T12:34:56Z",
+  "teams": {
+    "team_id": "team-123",
+    "channel_id": "channel-456",
+    "root_message_id": "1752849296000",
+    "reply_to_message_id": "1752849296000"
+  },
+  "betterstack": {
+    "alert_id": "alert-recovery-789",
+    "incident_id": "incident-recovery-789",
+    "monitor_name": "hcww homepage recovered",
+    "monitor_url": "https://hcww.net/",
+    "status": "up",
+    "alert_type": "monitor.up",
+    "check_timestamp": "2026-07-18T12:34:00Z",
+    "severity": "low",
+    "raw_body": "Monitor recovered and is back up",
+    "metadata": {
+      "monitor_id": "mon-123",
+      "response_code": 200
+    }
+  }
+}

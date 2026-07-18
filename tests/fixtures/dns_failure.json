@@ -1,0 +1,24 @@
+{
+  "event_id": "evt_dns_0001",
+  "source": "teams_workflow",
+  "delivered_at": "2026-07-18T12:34:56Z",
+  "teams": {
+    "team_id": "team-123",
+    "channel_id": "channel-456",
+    "root_message_id": "1752849296000",
+    "reply_to_message_id": "1752849296000"
+  },
+  "betterstack": {
+    "alert_id": "alert-dns-789",
+    "incident_id": "incident-dns-789",
+    "monitor_name": "hcww dns",
+    "monitor_url": "https://dns-fail.hcww.net/",
+    "status": "down",
+    "alert_type": "monitor.down",
+    "check_timestamp": "2026-07-18T12:34:00Z",
+    "raw_body": "DNS resolution failure",
+    "metadata": {
+      "monitor_id": "mon-dns-123"
+    }
+  }
+}

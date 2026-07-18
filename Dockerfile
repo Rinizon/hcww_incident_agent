@@ -1,0 +1,13 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY . /app
+
+ENV PYTHONUNBUFFERED=1
+ENV HCWW_AGENT_HOST=0.0.0.0
+ENV HCWW_AGENT_PORT=8787
+
+EXPOSE 8787
+
+CMD ["python3", "app.py"]
