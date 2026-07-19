@@ -7,6 +7,7 @@ from pathlib import Path
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
+from app.notifier import TeamsNotifier
 from app.remediation import (
     CloudflareClient,
     DeployClient,
@@ -17,10 +18,7 @@ from app.remediation import (
     build_deploy_client,
 )
 from app.server import IncidentAgentApplication
-from app.schema import (
-    PayloadValidationError,
-    direct_betterstack_example_payload,
-)
+from app.schema import PayloadValidationError, validation_example_payload
 
 
 class FakeCloudflareClient(CloudflareClient):
@@ -53,8 +51,9 @@ class ApplicationTestCase(unittest.TestCase):
             service_name="hcww",
             actor_email="incident-agent@hcww.local",
             public_base_url="https://agent.example.com",
-            betterstack_webhook_shared_secret="betterstack-secret",
-            betterstack_webhook_secret_header="X-HCWW-BetterStack-Secret",
+            workflow_shared_secret="test-secret",
+            teams_post_mode="workflow",
+            teams_webhook_url="",
             cloudflare_api_token="",
             cloudflare_account_id="",
             cloudflare_zone_id="",
@@ -66,6 +65,7 @@ class ApplicationTestCase(unittest.TestCase):
             enable_cache_purge=True,
             enable_redeploy=True,
         )
+        self.notifier = TeamsNotifier(settings=self.settings)
         self.cloudflare = FakeCloudflareClient()
         self.deploy = FakeDeployClient()
         self.fetch_calls = {}
@@ -83,6 +83,7 @@ class ApplicationTestCase(unittest.TestCase):
         self.app = IncidentAgentApplication(
             settings=self.settings,
             diagnostics=self.diagnostics,
+            notifier=self.notifier,
             remediation=self.remediation,
         )
         self.remediation.store = self.app.store
@@ -122,7 +123,7 @@ class ApplicationTestCase(unittest.TestCase):
     def test_webhook_persists_incident_and_audit(self) -> None:
         payload = self.load_fixture("edge_down.json")
         status_code, body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
 
@@ -133,6 +134,7 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(incident["normalized_severity"], "sev1")
         self.assertEqual(incident["incident_type"], "edge")
         self.assertEqual(body["classification"]["normalized_severity"], "sev1")
+        self.assertEqual(len(self.notifier.sent_messages), 3)
         self.assertEqual(len(incident["action_attempts"]), 0)
 
         incident_id = incident["incident_id"]
@@ -148,9 +150,12 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertIn("incident.diagnosing", event_types)
         self.assertIn("incident.diagnostics_completed", event_types)
         self.assertIn("incident.resolved", event_types)
+        self.assertIn("teams.update.acknowledged", event_types)
+        self.assertIn("teams.update.diagnosis", event_types)
+        self.assertIn("teams.update.resolved", event_types)
 
     def test_webhook_requires_shared_secret_when_configured(self) -> None:
-        payload = direct_betterstack_example_payload()
+        payload = validation_example_payload()
 
         with self.assertRaises(PermissionError):
             self.app.handle_webhook(
@@ -159,35 +164,14 @@ class ApplicationTestCase(unittest.TestCase):
             )
 
     def test_webhook_rejects_invalid_payload(self) -> None:
-        payload = direct_betterstack_example_payload()
-        del payload["betterstack"]["monitor_name"]
+        payload = validation_example_payload()
+        del payload["teams"]["root_message_id"]
 
         with self.assertRaises(PayloadValidationError):
             self.app.handle_webhook(
-                headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+                headers={"X-HCWW-Workflow-Secret": "test-secret"},
                 body=json.dumps(payload).encode("utf-8"),
             )
-
-    def test_direct_betterstack_webhook_persists_incident_without_teams_context(self) -> None:
-        payload = direct_betterstack_example_payload()
-
-        status_code, body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
-            body=json.dumps(payload).encode("utf-8"),
-        )
-
-        self.assertEqual(status_code, 202)
-        incident = body["incident"]
-        self.assertEqual(incident["source_system"], "betterstack_webhook")
-        self.assertEqual(incident["betterstack"]["monitor_url"], "https://hcww.net/")
-        self.assertEqual(incident["current_status"], "resolved")
-        self.assertNotIn("teams", incident)
-
-    def test_schema_document_includes_secret_header(self) -> None:
-        schema = self.app.schema_document()
-
-        self.assertIn("X-HCWW-BetterStack-Secret", schema["headers"])
-        self.assertEqual(schema["expected_source"], "betterstack_webhook")
 
     def test_classifier_sets_contact_path_to_sev2(self) -> None:
         payload = self.load_fixture("contact_down.json")
@@ -218,12 +202,13 @@ class ApplicationTestCase(unittest.TestCase):
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
 
         status_code, body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
 
         self.assertEqual(status_code, 202)
         self.assertEqual(body["incident"]["current_status"], "resolved")
+        self.assertEqual(self.notifier.sent_messages[-1]["payload"]["phase"], "resolved")
         self.assertEqual(len(body["incident"]["action_attempts"]), 1)
         self.assertEqual(body["incident"]["action_attempts"][0]["playbook_name"], "cloudflare_cache_purge")
         self.assertEqual(len(self.cloudflare.calls), 1)
@@ -234,7 +219,7 @@ class ApplicationTestCase(unittest.TestCase):
         payload["betterstack"]["monitor_url"] = "https://dns-fail.hcww.net/"
 
         status_code, body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
 
@@ -248,7 +233,7 @@ class ApplicationTestCase(unittest.TestCase):
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
 
         status_code, body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
 
@@ -263,11 +248,11 @@ class ApplicationTestCase(unittest.TestCase):
     def test_duplicate_event_is_ignored(self) -> None:
         payload = self.load_fixture("edge_down.json")
         first_status, first_body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
         second_status, second_body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
 
@@ -284,7 +269,7 @@ class ApplicationTestCase(unittest.TestCase):
         payload["betterstack"]["monitor_url"] = "https://redeploy-fail.hcww.net/"
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
         _, first_body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
         )
 
@@ -293,7 +278,7 @@ class ApplicationTestCase(unittest.TestCase):
         repeated["delivered_at"] = "2026-07-18T12:35:56Z"
         repeated["betterstack"]["alert_id"] = "alert-repeat-2"
         _, second_body = self.app.handle_webhook(
-            headers={"X-HCWW-BetterStack-Secret": "betterstack-secret"},
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(repeated).encode("utf-8"),
         )
 
@@ -345,6 +330,7 @@ class ApplicationTestCase(unittest.TestCase):
             service_name="hcww",
             actor_email="incident-agent@hcww.local",
             public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
             cloudflare_api_token="",
             cloudflare_zone_id="",
         )
@@ -444,12 +430,66 @@ class ApplicationTestCase(unittest.TestCase):
             service_name="hcww",
             actor_email="incident-agent@hcww.local",
             public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
             deploy_mode="api",
             deploy_base_url="https://deploy.example.com/hooks/redeploy",
             deploy_api_token="deploy-token",
         )
         client = build_deploy_client(settings)
         self.assertEqual(type(client).__name__, "RealDeployClient")
+
+    def test_webhook_notifier_sends_text_payload(self) -> None:
+        captured = {}
+
+        def fake_sender(webhook_url: str, payload: dict) -> dict:
+            captured["webhook_url"] = webhook_url
+            captured["payload"] = payload
+            return {"status_code": 202}
+
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            teams_post_mode="webhook",
+            teams_webhook_url="https://workflow.example.test/webhook",
+        )
+        notifier = TeamsNotifier(settings=settings, webhook_sender=fake_sender)
+        incident = {
+            "incident_id": 99,
+            "external_incident_key": "incident-99",
+            "teams": {
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+                "root_message_id": "msg-1",
+            },
+        }
+
+        result = notifier.send_incident_update(
+            incident=incident,
+            phase="diagnosis",
+            message="TEST incident is being diagnosed.",
+            details={"current_status": "diagnosing", "severity": "sev1"},
+        )
+
+        self.assertTrue(result["posted"])
+        self.assertEqual(captured["webhook_url"], "https://workflow.example.test/webhook")
+        self.assertEqual(captured["payload"]["type"], "message")
+        self.assertEqual(len(captured["payload"]["attachments"]), 1)
+        attachment = captured["payload"]["attachments"][0]
+        self.assertEqual(
+            attachment["contentType"],
+            "application/vnd.microsoft.card.adaptive",
+        )
+        body = attachment["content"]["body"]
+        self.assertEqual(body[0]["text"], "HCWW Incident Agent | DIAGNOSIS")
+        self.assertEqual(body[1]["text"], "TEST incident is being diagnosed.")
+        facts = body[2]["facts"]
+        self.assertTrue(any(f["title"] == "Severity" and f["value"] == "sev1" for f in facts))
 
     def test_build_deploy_client_uses_deploy_hook_without_token(self) -> None:
         settings = Settings(
@@ -460,6 +500,7 @@ class ApplicationTestCase(unittest.TestCase):
             service_name="hcww",
             actor_email="incident-agent@hcww.local",
             public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
             deploy_mode="deploy_hook",
             deploy_base_url="https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/hook-123",
             deploy_api_token="",

@@ -9,12 +9,9 @@ from urllib.parse import urlparse
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
+from app.notifier import TeamsNotifier
 from app.remediation import RemediationEngine
-from app.schema import (
-    PayloadValidationError,
-    describe_direct_betterstack_webhook_schema,
-    validate_webhook_payload,
-)
+from app.schema import PayloadValidationError, describe_webhook_schema, validate_webhook_payload
 from app.store import IncidentStore
 
 
@@ -23,11 +20,13 @@ class IncidentAgentApplication:
         self,
         settings: Optional[Settings] = None,
         diagnostics: Optional[DiagnosticEngine] = None,
+        notifier: Optional[TeamsNotifier] = None,
         remediation: Optional[RemediationEngine] = None,
     ) -> None:
         self.settings = settings or Settings()
         self.store = IncidentStore(self.settings.db_path)
         self.diagnostics = diagnostics or DiagnosticEngine(settings=self.settings)
+        self.notifier = notifier or TeamsNotifier(settings=self.settings)
         self.remediation = remediation or RemediationEngine(
             settings=self.settings,
             diagnostics=self.diagnostics,
@@ -45,22 +44,13 @@ class IncidentAgentApplication:
     def handle_webhook(
         self, headers: Dict[str, str], body: bytes
     ) -> tuple[int, Dict[str, Any]]:
-        self._validate_secret(
-            headers=headers,
-            expected=self.settings.betterstack_webhook_shared_secret,
-            header_name=self.settings.betterstack_webhook_secret_header,
-        )
-        validated = self._validate_payload(body, validate_webhook_payload)
-        return self._ingest_validated_payload(validated)
-
-    def _validate_payload(self, body: bytes, validator: Any) -> Dict[str, Any]:
+        self._validate_secret(headers)
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise PayloadValidationError("Request body must be valid JSON") from exc
-        return validator(payload)
 
-    def _ingest_validated_payload(self, validated: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+        validated = validate_webhook_payload(payload)
         duplicate = self.store.get_incident_by_source_event_id(validated["event_id"])
         if duplicate is not None:
             self.store.add_audit_event(
@@ -100,19 +90,34 @@ class IncidentAgentApplication:
         return {"audit_events": self.store.list_audit_events(incident_id)}
 
     def schema_document(self) -> Dict[str, Any]:
-        return describe_direct_betterstack_webhook_schema(
-            self.settings.betterstack_webhook_secret_header
-        )
+        return describe_webhook_schema()
 
-    def _validate_secret(self, headers: Dict[str, str], expected: str, header_name: str) -> None:
+    def _validate_secret(self, headers: Dict[str, str]) -> None:
+        expected = self.settings.workflow_shared_secret
         if not expected:
             return
 
-        actual = headers.get(header_name, "")
+        actual = headers.get("X-HCWW-Workflow-Secret", "")
         if actual != expected:
-            raise PermissionError(f"Missing or invalid shared secret in {header_name}")
+            raise PermissionError("Missing or invalid workflow shared secret")
 
     def _process_incident(self, incident: Dict[str, Any]) -> Dict[str, Any]:
+        acknowledged = self.notifier.send_incident_update(
+            incident=incident,
+            phase="acknowledged",
+            message=(
+                f"Incident {incident['incident_id']} acknowledged as "
+                f"{incident['normalized_severity']} {incident['incident_type']}."
+            ),
+            details={"current_status": incident["current_status"]},
+        )
+        self.store.add_audit_event(
+            incident_id=incident["incident_id"],
+            event_type="teams.update.acknowledged",
+            summary="Queued Teams acknowledgement update",
+            details=acknowledged,
+        )
+
         if incident["current_status"] != "resolved":
             incident = self.store.transition_incident_status(
                 incident_id=incident["incident_id"],
@@ -129,6 +134,19 @@ class IncidentAgentApplication:
             details=diagnostic_results,
         )
 
+        diagnosis_update = self.notifier.send_incident_update(
+            incident=incident,
+            phase="diagnosis",
+            message=diagnostic_results["summary"],
+            details=diagnostic_results,
+        )
+        self.store.add_audit_event(
+            incident_id=incident["incident_id"],
+            event_type="teams.update.diagnosis",
+            summary="Queued Teams diagnosis update",
+            details=diagnosis_update,
+        )
+
         if diagnostic_results["outcome_status"] != "resolved":
             if self._is_in_remediation_cooldown(incident["incident_id"]):
                 cooldown_details = {
@@ -141,6 +159,18 @@ class IncidentAgentApplication:
                     summary="Remediation skipped due to cooldown",
                     details=cooldown_details,
                 )
+                cooldown_update = self.notifier.send_incident_update(
+                    incident=incident,
+                    phase="escalated",
+                    message="Remediation cooldown is active; escalating to avoid automation loops.",
+                    details=cooldown_details,
+                )
+                self.store.add_audit_event(
+                    incident_id=incident["incident_id"],
+                    event_type="teams.update.escalated",
+                    summary="Queued Teams cooldown escalation update",
+                    details=cooldown_update,
+                )
                 return incident
 
             incident = self.store.transition_incident_status(
@@ -148,6 +178,18 @@ class IncidentAgentApplication:
                 new_status="remediating",
                 summary="Automated remediation started",
                 details={"reason": "Initial diagnostics did not recover the incident"},
+            )
+            remediation_start_update = self.notifier.send_incident_update(
+                incident=incident,
+                phase="remediation_started",
+                message="Automated remediation is starting.",
+                details={"incident_type": incident["incident_type"]},
+            )
+            self.store.add_audit_event(
+                incident_id=incident["incident_id"],
+                event_type="teams.update.remediation_started",
+                summary="Queued Teams remediation start update",
+                details=remediation_start_update,
             )
 
             remediation_result = self.remediation.execute(incident, diagnostic_results)
@@ -173,6 +215,18 @@ class IncidentAgentApplication:
                 summary="Verification started after remediation",
                 details={"attempt_count": len(remediation_result["steps"])},
             )
+            verification_update = self.notifier.send_incident_update(
+                incident=incident,
+                phase="verifying",
+                message="Verification is running after automated remediation.",
+                details=remediation_result["final_verification"],
+            )
+            self.store.add_audit_event(
+                incident_id=incident["incident_id"],
+                event_type="teams.update.verifying",
+                summary="Queued Teams verifying update",
+                details=verification_update,
+            )
             diagnostic_results = remediation_result["final_verification"]
             final_result_details = dict(diagnostic_results)
             final_result_details["remediation"] = {
@@ -181,6 +235,19 @@ class IncidentAgentApplication:
                 "reason": remediation_result["reason"],
                 "step_count": len(remediation_result["steps"]),
             }
+
+            remediation_complete_update = self.notifier.send_incident_update(
+                incident=incident,
+                phase="remediation_completed",
+                message=remediation_result["reason"],
+                details=remediation_result,
+            )
+            self.store.add_audit_event(
+                incident_id=incident["incident_id"],
+                event_type="teams.update.remediation_completed",
+                summary="Queued Teams remediation completed update",
+                details=remediation_complete_update,
+            )
 
         else:
             final_result_details = dict(diagnostic_results)
@@ -192,6 +259,19 @@ class IncidentAgentApplication:
             summary=f"Incident moved to {final_status}",
             details=final_result_details,
             resolved=final_status == "resolved",
+        )
+
+        final_update = self.notifier.send_incident_update(
+            incident=incident,
+            phase=final_status,
+            message=diagnostic_results["outcome_reason"],
+            details=final_result_details,
+        )
+        self.store.add_audit_event(
+            incident_id=incident["incident_id"],
+            event_type=f"teams.update.{final_status}",
+            summary=f"Queued Teams {final_status} update",
+            details=final_update,
         )
         return incident
 
@@ -215,7 +295,7 @@ def create_http_handler(app: IncidentAgentApplication):
                 if path == "/healthz":
                     self._send_json(HTTPStatus.OK, app.handle_health())
                     return
-                if path == "/schema/webhooks/betterstack/incident":
+                if path == "/schema/webhooks/teams/betterstack":
                     self._send_json(HTTPStatus.OK, app.schema_document())
                     return
                 if path == "/incidents":
@@ -243,7 +323,7 @@ def create_http_handler(app: IncidentAgentApplication):
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path != "/webhooks/betterstack/incident":
+            if parsed.path != "/webhooks/teams/betterstack":
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Route not found"})
                 return
 

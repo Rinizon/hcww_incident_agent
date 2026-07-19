@@ -8,11 +8,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
-LEGACY_CONTEXT = {
-    "team_id": "betterstack",
-    "channel_id": "direct-webhook",
-}
-
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -110,7 +105,7 @@ class IncidentStore:
         now = utc_now_iso()
         external_key = payload["external_incident_key"]
         betterstack = payload["betterstack"]
-        legacy_root_message_id = payload["event_id"]
+        teams = payload["teams"]
         raw_payload_json = json.dumps(payload["raw_payload"], sort_keys=True)
         normalized_severity = classification["normalized_severity"]
         incident_type = classification["incident_type"]
@@ -165,10 +160,10 @@ class IncidentStore:
                             normalized_severity,
                             incident_type,
                             current_status,
-                            LEGACY_CONTEXT["team_id"],
-                            LEGACY_CONTEXT["channel_id"],
-                            legacy_root_message_id,
-                            None,
+                            teams["team_id"],
+                            teams["channel_id"],
+                            teams["root_message_id"],
+                            teams["reply_to_message_id"],
                             raw_payload_json,
                             now,
                             existing["incident_id"],
@@ -219,10 +214,10 @@ class IncidentStore:
                             normalized_severity,
                             incident_type,
                             current_status,
-                            LEGACY_CONTEXT["team_id"],
-                            LEGACY_CONTEXT["channel_id"],
-                            legacy_root_message_id,
-                            None,
+                            teams["team_id"],
+                            teams["channel_id"],
+                            teams["root_message_id"],
+                            teams["reply_to_message_id"],
                             raw_payload_json,
                             now,
                             now,
@@ -236,7 +231,7 @@ class IncidentStore:
                     connection=connection,
                     incident_id=incident_id,
                     event_type="incident.received" if created else "incident.updated",
-                    summary=f"Incident payload stored from {payload['source']}",
+                    summary="Incident payload stored from Teams workflow",
                     details={
                         "event_id": payload["event_id"],
                         "external_incident_key": external_key,
@@ -498,6 +493,12 @@ class IncidentStore:
             "normalized_severity": row["normalized_severity"],
             "incident_type": row["incident_type"],
             "current_status": row["current_status"],
+            "teams": {
+                "team_id": row["team_id"],
+                "channel_id": row["channel_id"],
+                "root_message_id": row["root_message_id"],
+                "reply_to_message_id": row["reply_to_message_id"],
+            },
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "resolved_at": row["resolved_at"],
