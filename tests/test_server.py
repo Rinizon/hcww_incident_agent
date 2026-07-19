@@ -7,7 +7,7 @@ from pathlib import Path
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
-from app.notifier import TeamsNotifier
+from app.notifier import AGENT_MESSAGE_MARKER, TeamsNotifier
 from app.remediation import (
     CloudflareClient,
     DeployClient,
@@ -172,6 +172,23 @@ class ApplicationTestCase(unittest.TestCase):
                 headers={"X-HCWW-Workflow-Secret": "test-secret"},
                 body=json.dumps(payload).encode("utf-8"),
             )
+
+    def test_self_generated_agent_message_is_ignored(self) -> None:
+        payload = validation_example_payload()
+        payload["event_id"] = "evt_self_generated_1"
+        payload["betterstack"]["raw_body"] = (
+            f"<p>{AGENT_MESSAGE_MARKER} HCWW Incident Agent | DIAGNOSIS</p>"
+        )
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertTrue(body["ignored"])
+        self.assertEqual(body["reason"], "self_generated_agent_message")
+        self.assertEqual(self.app.list_incidents()["incidents"], [])
 
     def test_classifier_sets_contact_path_to_sev2(self) -> None:
         payload = self.load_fixture("contact_down.json")
@@ -486,7 +503,18 @@ class ApplicationTestCase(unittest.TestCase):
             "application/vnd.microsoft.card.adaptive",
         )
         body = attachment["content"]["body"]
-        self.assertEqual(body[0]["text"], "HCWW Incident Agent | DIAGNOSIS")
+        self.assertEqual(
+            captured["payload"]["summary"],
+            f"{AGENT_MESSAGE_MARKER} HCWW Incident Agent | DIAGNOSIS",
+        )
+        self.assertEqual(
+            captured["payload"]["text"],
+            f"{AGENT_MESSAGE_MARKER} HCWW Incident Agent | DIAGNOSIS",
+        )
+        self.assertEqual(
+            body[0]["text"],
+            f"{AGENT_MESSAGE_MARKER} | HCWW Incident Agent | DIAGNOSIS",
+        )
         self.assertEqual(body[1]["text"], "TEST incident is being diagnosed.")
         facts = body[2]["facts"]
         self.assertTrue(any(f["title"] == "Severity" and f["value"] == "sev1" for f in facts))

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
-from app.notifier import TeamsNotifier
+from app.notifier import AGENT_MESSAGE_MARKER, TeamsNotifier
 from app.remediation import RemediationEngine
 from app.schema import PayloadValidationError, describe_webhook_schema, validate_webhook_payload
 from app.store import IncidentStore
@@ -51,6 +51,15 @@ class IncidentAgentApplication:
             raise PayloadValidationError("Request body must be valid JSON") from exc
 
         validated = validate_webhook_payload(payload)
+        if self._is_self_generated_event(validated):
+            return (
+                HTTPStatus.ACCEPTED,
+                {
+                    "status": "accepted",
+                    "ignored": True,
+                    "reason": "self_generated_agent_message",
+                },
+            )
         duplicate = self.store.get_incident_by_source_event_id(validated["event_id"])
         if duplicate is not None:
             self.store.add_audit_event(
@@ -100,6 +109,19 @@ class IncidentAgentApplication:
         actual = headers.get("X-HCWW-Workflow-Secret", "")
         if actual != expected:
             raise PermissionError("Missing or invalid workflow shared secret")
+
+    def _is_self_generated_event(self, validated: Dict[str, Any]) -> bool:
+        betterstack = validated.get("betterstack", {})
+        marker_fields = [
+            betterstack.get("raw_body"),
+            betterstack.get("monitor_name"),
+            betterstack.get("status"),
+            betterstack.get("alert_type"),
+        ]
+        metadata = betterstack.get("metadata") or {}
+        marker_fields.append(json.dumps(metadata, sort_keys=True))
+        haystack = " ".join(str(value) for value in marker_fields if value is not None)
+        return AGENT_MESSAGE_MARKER in haystack
 
     def _process_incident(self, incident: Dict[str, Any]) -> Dict[str, Any]:
         acknowledged = self.notifier.send_incident_update(

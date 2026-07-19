@@ -7,6 +7,8 @@ from urllib.request import Request, urlopen
 
 from app.config import Settings
 
+AGENT_MESSAGE_MARKER = "HCWW_AGENT_AUTOMATION"
+
 
 def default_webhook_sender(webhook_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     request = Request(
@@ -97,6 +99,8 @@ class TeamsNotifier:
 
         return {
             "type": "message",
+            "summary": f"{AGENT_MESSAGE_MARKER} HCWW Incident Agent | {phase}",
+            "text": f"{AGENT_MESSAGE_MARKER} HCWW Incident Agent | {phase}",
             "attachments": [
                 {
                     "contentType": "application/vnd.microsoft.card.adaptive",
@@ -109,7 +113,7 @@ class TeamsNotifier:
                                 "type": "TextBlock",
                                 "weight": "Bolder",
                                 "size": "Medium",
-                                "text": f"HCWW Incident Agent | {phase}",
+                                "text": f"{AGENT_MESSAGE_MARKER} | HCWW Incident Agent | {phase}",
                                 "wrap": True,
                             },
                             {
