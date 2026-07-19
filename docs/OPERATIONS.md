@@ -8,29 +8,18 @@ This runbook covers deployment, configuration, and day-to-day operations for the
 
 The incident agent is responsible for:
 
-- receiving Better Stack alerts forwarded from Teams Workflows or Power Automate
+- receiving Better Stack alerts directly from Better Stack outgoing webhooks
 - classifying incidents for `hcww.net`
 - running DNS and HTTP diagnostics
 - attempting safe remediation playbooks
-- posting status updates back into the originating Teams incident thread
 - preserving audit history in SQLite
 
 ## Required Integrations
 
-### Microsoft Teams / Workflows
-
-- Standard Teams channel for Better Stack incident posts
-- Teams Workflows or Power Automate flow in the default environment
-- Shared secret for webhook authentication
-- Teams posting mode decision:
-  - `workflow` for workflow-managed posting
-  - `webhook` for direct outgoing webhook style posting
-  - future Graph API path if threaded reply requirements outgrow current connector limits
-
 ### Better Stack
 
 - Uptime monitors for HCWW public routes
-- Alert routing into the Teams incident channel
+- Direct outgoing webhook from Better Stack
 - Stable incident identifiers and alert metadata in the forwarded payload
 
 ### Cloudflare
@@ -48,6 +37,11 @@ The incident agent is responsible for:
 ## Environment Variables
 
 Populate the values in [`.env`](/Users/rkane/repos/hcww_incident_agent/.env).
+
+Better Stack intake settings:
+
+- `BETTERSTACK_WEBHOOK_SHARED_SECRET`
+- `BETTERSTACK_WEBHOOK_SECRET_HEADER`
 
 Safety-sensitive settings:
 
@@ -106,24 +100,21 @@ curl -s http://127.0.0.1:8787/healthz
 Inspect the webhook schema:
 
 ```bash
-curl -s http://127.0.0.1:8787/schema/webhooks/teams/betterstack
+curl -s http://127.0.0.1:8787/schema/webhooks/betterstack/incident
 ```
 
-## Teams Workflow Contract
+The direct Better Stack integration should `POST` to:
 
-The workflow should `POST` to:
-
-- `/webhooks/teams/betterstack`
+- `/webhooks/betterstack/incident`
 
 Headers:
 
 - `Content-Type: application/json`
-- `X-HCWW-Workflow-Secret: <shared secret>`
+- `<BETTERSTACK_WEBHOOK_SECRET_HEADER>: <shared secret>`
 
 Payload requirements:
 
 - stable `event_id`
-- Teams thread context
 - Better Stack alert identifiers
 - monitor URL
 - alert type
@@ -131,16 +122,105 @@ Payload requirements:
 - check timestamp
 - raw alert text
 
+Direct Better Stack intake notes:
+
+- the current direct endpoint is intended for a Better Stack custom outgoing webhook template
+
+### Better Stack Webhook Setup
+
+Better Stack Uptime outgoing webhooks support:
+
+- incident webhooks
+- custom headers
+- a custom JSON request body template
+
+Recommended Better Stack settings:
+
+1. Go to `Uptime -> Integrations -> Exporting data -> Outgoing webhooks`
+2. Create or edit an `Incident webhook`
+3. Set the destination URL to:
+
+```text
+https://incident-agent.hcww.net/webhooks/betterstack/incident
+```
+
+4. Enable at least these incident events:
+
+- started
+- acknowledged
+- resolved
+- reopened
+
+5. Add a custom header:
+
+- Name: value of `BETTERSTACK_WEBHOOK_SECRET_HEADER`
+- Value: value of `BETTERSTACK_WEBHOOK_SHARED_SECRET`
+
+6. Use a custom JSON body template like this:
+
+```json
+{
+  "event_id": "$INCIDENT_ID-$STARTED_AT-$ACKNOWLEDGED_AT-$RESOLVED_AT",
+  "source": "betterstack_webhook",
+  "delivered_at": "$STARTED_AT",
+  "betterstack": {
+    "alert_id": "$INCIDENT_ID",
+    "incident_id": "$INCIDENT_ID",
+    "monitor_name": "$NAME",
+    "monitor_url": "$URL",
+    "status": "$CAUSE",
+    "alert_type": "incident_change",
+    "check_timestamp": "$STARTED_AT",
+    "severity": "critical",
+    "raw_body": "$CAUSE",
+    "metadata": {
+      "started_at": "$STARTED_AT",
+      "acknowledged_at": "$ACKNOWLEDGED_AT",
+      "resolved_at": "$RESOLVED_AT",
+      "response_url": "$RESPONSE_URL",
+      "screenshot_url": "$SCREENSHOT_URL"
+    }
+  }
+}
+```
+
+Current direct-intake assumptions:
+
+- `event_id` must be unique enough to avoid duplicate suppression collisions
+- `monitor_name` and `monitor_url` come from Better Stack template variables
+- `status` and `raw_body` are currently derived from `$CAUSE`
+- `severity` is currently hard-coded to `critical` in the recommended template and can be refined in a later pass
+
+Recommended first validation:
+
+```bash
+curl -s http://127.0.0.1:8787/schema/webhooks/betterstack/incident
+```
+
+Recommended public validation after deployment:
+
+```bash
+curl -i https://incident-agent.hcww.net/schema/webhooks/betterstack/incident
+```
+
+Recommended manual synthetic POST:
+
+```bash
+curl -i -X POST https://incident-agent.hcww.net/webhooks/betterstack/incident \
+  -H "Content-Type: application/json" \
+  -H "X-HCWW-BetterStack-Secret: <shared secret>" \
+  --data '{"event_id":"manual-betterstack-test-1","source":"betterstack_webhook","delivered_at":"2026-07-19T00:25:00Z","betterstack":{"alert_id":"manual-betterstack-test-1","incident_id":"manual-betterstack-test-1","monitor_name":"Manual test","monitor_url":"https://hcww.net/","status":"Cloudflare 523 origin unreachable","alert_type":"incident_change","check_timestamp":"2026-07-19T00:25:00Z","severity":"critical","raw_body":"Manual Better Stack test","metadata":{}}}'
+```
+
 ## Deployment Checklist
 
 1. Create the production `.env` with real Teams, Better Stack, Cloudflare, and deploy credentials.
-2. Validate the Teams workflow can reach the agent endpoint.
+2. Validate the Better Stack webhook can reach the direct intake endpoint.
 3. Confirm `GET /healthz` succeeds from the runtime host.
 4. Trigger a controlled test incident from Better Stack or a fixture-driven synthetic workflow payload.
-5. Confirm the agent posts acknowledgement, diagnosis, and final state updates into the same Teams thread.
-6. Confirm audit records are written and retrievable with `GET /incidents/:incident_id/audit`.
-7. Confirm cache purge and redeploy integrations are disabled until credentials are validated.
-8. Enable one mutating playbook at a time and run a supervised drill.
+5. Confirm audit records are written and retrievable with `GET /incidents/:incident_id/audit`.
+6. Confirm cache purge and redeploy integrations are disabled until credentials are validated.
+7. Enable one mutating playbook at a time and run a supervised drill.
 
 ## Cloudflare Hookup
 
@@ -207,7 +287,7 @@ Recommended server-side validation:
 ```bash
 docker compose up -d --build
 curl -s http://127.0.0.1:8787/healthz
-curl -s http://127.0.0.1:8787/schema/webhooks/teams/betterstack
+curl -s http://127.0.0.1:8787/schema/webhooks/betterstack/incident
 ```
 
 If the agent must be reachable from another machine on the LAN, publish port `8787`
@@ -229,7 +309,6 @@ The current implementation includes:
 - Review recent incidents via `GET /incidents`
 - Review audit history for escalated incidents
 - Confirm the SQLite database file is retained and backed up appropriately for the environment
-- Check that Teams delivery is still functioning after any workflow or connector changes
 - Revalidate Cloudflare and deploy credentials after rotation
 
 ## Incident Handling Notes

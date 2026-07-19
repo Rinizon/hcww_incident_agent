@@ -257,22 +257,22 @@ The agent must post back into the same incident conversation initiated by the Be
 
 ## 12. Workflow Ingestion Requirements
 
-The Teams workflow payload forwarded to the agent should include:
+The Better Stack outgoing webhook payload sent to the agent should include:
 
-- Teams team ID
-- Teams channel ID
-- Teams root message ID
-- Teams thread or reply context required for posting updates
+- stable incident event ID
 - raw Better Stack alert body
-- parsed Better Stack fields if the workflow can extract them
+- Better Stack monitor name
+- Better Stack monitor URL
+- Better Stack incident and alert identifiers
+- status or cause text sufficient for classification
 
 Preferred ingestion contract:
 
-- `POST /webhooks/teams/betterstack`
+- `POST /webhooks/betterstack/incident`
 
 The endpoint should validate:
 
-- shared secret or signed token from the workflow layer
+- shared secret header configured in Better Stack
 - payload schema
 - deduplication identifiers
 
@@ -284,7 +284,7 @@ V1 should be organized into the following components:
 
 Responsibilities:
 
-- receive workflow-triggered incident payloads
+- receive Better Stack incident webhook payloads
 - validate auth and schema
 - create or resume an incident record
 - enqueue diagnostic handling
@@ -295,7 +295,6 @@ Responsibilities:
 
 - persist incidents, actions, retries, audit events, and current status
 - support idempotency and deduplication
-- preserve Teams context for follow-up updates
 
 SQLite is acceptable for V1.
 
@@ -329,17 +328,7 @@ Responsibilities:
 Responsibilities:
 
 - Cloudflare API calls
-- Better Stack API lookups
 - deployment hook or deployment API calls
-- Teams update posting
-
-### 13.7 Teams Notifier
-
-Responsibilities:
-
-- publish incident lifecycle updates into the originating Teams thread
-- keep messages human-readable
-- avoid duplicate or noisy updates
 
 ## 14. Proposed Data Model
 
@@ -358,13 +347,6 @@ V1 incident storage should minimally track:
 - created at
 - updated at
 - resolved at
-
-### Teams Context
-
-- team ID
-- channel ID
-- root message ID
-- reply target ID if needed
 
 ### Action Attempt
 
@@ -390,7 +372,7 @@ V1 incident storage should minimally track:
 
 Initial internal endpoints:
 
-- `POST /webhooks/teams/betterstack`
+- `POST /webhooks/betterstack/incident`
 - `GET /healthz`
 - `GET /incidents`
 - `GET /incidents/:incident_id`

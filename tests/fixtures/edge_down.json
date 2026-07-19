@@ -1,13 +1,7 @@
 {
   "event_id": "evt_20260718_0001",
-  "source": "teams_workflow",
+  "source": "betterstack_webhook",
   "delivered_at": "2026-07-18T12:34:56Z",
-  "teams": {
-    "team_id": "team-123",
-    "channel_id": "channel-456",
-    "root_message_id": "1752849296000",
-    "reply_to_message_id": "1752849296000"
-  },
   "betterstack": {
     "alert_id": "alert-789",
     "incident_id": "incident-789",

@@ -4,7 +4,7 @@ Auto-remediation agent for `hcww.net`.
 
 ## Purpose
 
-The agent receives Better Stack incident alerts that arrive in Microsoft Teams, evaluates severity from Better Stack metadata, attempts safe automated remediation for the HCWW website stack, and posts status updates back into the originating Teams incident thread.
+The agent receives Better Stack incident alerts, evaluates severity from Better Stack metadata, and attempts safe automated remediation for the HCWW website stack.
 
 ## Current Status
 
@@ -19,13 +19,13 @@ Milestones 1 through 5 are implemented as a zero-dependency Python service with 
 ### Available endpoints
 
 - `GET /healthz`
-- `GET /schema/webhooks/teams/betterstack`
-- `POST /webhooks/teams/betterstack`
+- `GET /schema/webhooks/betterstack/incident`
+- `POST /webhooks/betterstack/incident`
 - `GET /incidents`
 - `GET /incidents/:incident_id`
 - `GET /incidents/:incident_id/audit`
 
-Incoming Better Stack workflow payloads are now:
+Incoming Better Stack payloads are now:
 
 - validated against the webhook contract
 - normalized into an incident type
@@ -40,6 +40,57 @@ Incoming Better Stack workflow payloads are now:
 - backed by fixture-based end-to-end tests and an operations runbook in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md)
 - includes a real Cloudflare cache-purge client for production token and zone wiring
 - includes a real deploy client for Cloudflare Pages deploy hooks and bearer-authenticated deployment APIs
+
+### Better Stack intake
+
+Use Better Stack outgoing webhooks with a custom payload template and point them at:
+
+```text
+POST /webhooks/betterstack/incident
+```
+
+Protect the endpoint with the shared secret configured by:
+
+- `BETTERSTACK_WEBHOOK_SHARED_SECRET`
+- `BETTERSTACK_WEBHOOK_SECRET_HEADER`
+
+Recommended Better Stack configuration:
+
+- Trigger type: `Incident webhook`
+- Events: `started`, `acknowledged`, `resolved`, and `reopened`
+- URL: `https://incident-agent.hcww.net/webhooks/betterstack/incident`
+- Header name: match `BETTERSTACK_WEBHOOK_SECRET_HEADER`
+- Header value: match `BETTERSTACK_WEBHOOK_SHARED_SECRET`
+
+Recommended custom request body template:
+
+```json
+{
+  "event_id": "$INCIDENT_ID-$STARTED_AT-$ACKNOWLEDGED_AT-$RESOLVED_AT",
+  "source": "betterstack_webhook",
+  "delivered_at": "$STARTED_AT",
+  "betterstack": {
+    "alert_id": "$INCIDENT_ID",
+    "incident_id": "$INCIDENT_ID",
+    "monitor_name": "$NAME",
+    "monitor_url": "$URL",
+    "status": "$CAUSE",
+    "alert_type": "incident_change",
+    "check_timestamp": "$STARTED_AT",
+    "severity": "critical",
+    "raw_body": "$CAUSE",
+    "metadata": {
+      "started_at": "$STARTED_AT",
+      "acknowledged_at": "$ACKNOWLEDGED_AT",
+      "resolved_at": "$RESOLVED_AT",
+      "response_url": "$RESPONSE_URL",
+      "screenshot_url": "$SCREENSHOT_URL"
+    }
+  }
+}
+```
+
+See [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md) for the cutover checklist and validation steps.
 
 ### Local run
 
