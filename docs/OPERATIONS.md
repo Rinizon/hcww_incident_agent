@@ -182,6 +182,30 @@ python3 tools/drill_agent.py \
   --strict
 ```
 
+Inspect a drill payload without posting it:
+
+```bash
+python3 tools/drill_agent.py \
+  --scenario self-recovery \
+  --workflow-secret "$TEAMS_WORKFLOW_SHARED_SECRET" \
+  --dry-run
+```
+
+Replay a captured redacted payload file:
+
+```bash
+python3 tools/drill_agent.py \
+  --agent-url http://127.0.0.1:8787 \
+  --workflow-secret "$TEAMS_WORKFLOW_SHARED_SECRET" \
+  --admin-secret "$HCWW_ADMIN_SHARED_SECRET" \
+  --payload-file ./tests/fixtures/recovery.json \
+  --expect-status resolved \
+  --expect-duplicate false \
+  --expect-action-count 0 \
+  --expect-audit-event incident.received \
+  --strict
+```
+
 Available drills:
 
 - `self-recovery`: recovery fixture should resolve without action attempts
@@ -199,6 +223,11 @@ Recommended drill sequence:
 4. Enable `HCWW_ENABLE_CACHE_PURGE=true` only after diagnostics-only drills pass, then run `edge-cache-purge`.
 5. Enable `HCWW_ENABLE_REDEPLOY=true` only after cache-purge validation, then run `failed-redeploy`.
 6. Review each drill's final incident status, action attempt count, and audit events before leaving mutating playbooks enabled.
+
+Strict drill validation reports status, duplicate handling, action-attempt count,
+and required audit-event checks. When expected audit events are configured,
+provide `--admin-secret`; otherwise strict mode fails with an `audit_available`
+check.
 
 ## Teams Workflow Contract
 

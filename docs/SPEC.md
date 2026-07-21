@@ -51,6 +51,8 @@ Status: Complete.
 
 ## Step 6: Extend the Drill Harness for Replay and Staging
 
+Status: Complete.
+
 - Add a `--payload-file` option to replay a specific fixture or captured redacted payload.
 - Add a `--dry-run` or `--print-payload` mode to inspect the outbound request before posting.
 - Add stricter validation output for expected incident status, action count, duplicate handling, and required audit events.

@@ -26,7 +26,17 @@ from app.remediation import (
 from app.server import IncidentAgentApplication, create_http_handler
 from app.schema import PayloadValidationError, validation_example_payload
 from app.structured_logging import StructuredLogger
-from tools.drill_agent import SCENARIOS, evaluate_result, list_scenarios, load_payload, run_scenario
+from tools.drill_agent import (
+    SCENARIOS,
+    dry_run_request,
+    evaluate_result,
+    list_scenarios,
+    load_payload,
+    main as drill_main,
+    request_from_payload_file,
+    run_request,
+    run_scenario,
+)
 from tools.retention import main as retention_main
 
 
@@ -1911,6 +1921,146 @@ class ApplicationTestCase(unittest.TestCase):
         checks = evaluate_result(scenario, response, audit)
 
         self.assertTrue(all(check["ok"] for check in checks))
+
+    def test_drill_harness_reports_missing_audit_secret_for_required_events(self) -> None:
+        scenario = SCENARIOS["self-recovery"]
+        response = {
+            "incident": {
+                "current_status": "resolved",
+                "action_attempts": [],
+            }
+        }
+
+        checks = evaluate_result(scenario, response, audit=None)
+
+        audit_check = next(check for check in checks if check["name"] == "audit_available")
+        self.assertFalse(audit_check["ok"])
+        self.assertIn("--admin-secret", audit_check["hint"])
+
+    def test_drill_harness_builds_payload_file_request(self) -> None:
+        payload_file = Path(self.temp_dir.name) / "custom_payload.json"
+        payload_file.write_text(json.dumps(validation_example_payload()))
+
+        request = request_from_payload_file(
+            payload_file=payload_file,
+            expected_status="resolved",
+            expected_duplicate=False,
+            expected_action_count=0,
+            expected_audit_events=["incident.received"],
+            repeat=2,
+        )
+
+        self.assertEqual(request.name, "custom_payload")
+        self.assertEqual(request.payload["event_id"], "evt_20260718_0001")
+        self.assertEqual(request.expected_status, "resolved")
+        self.assertEqual(request.expected_audit_events, ["incident.received"])
+        self.assertEqual(request.repeat, 2)
+
+    def test_drill_harness_replays_payload_file_request_with_fake_http_clients(self) -> None:
+        request = request_from_payload_file(
+            payload_file=Path(__file__).parent / "fixtures" / "recovery.json",
+            expected_status="resolved",
+            expected_duplicate=False,
+            expected_action_count=0,
+            expected_audit_events=["incident.received"],
+        )
+        calls = {"post": 0, "get": 0}
+
+        def fake_post(url: str, payload: dict, headers: dict, timeout_seconds: float) -> dict:
+            calls["post"] += 1
+            return {
+                "duplicate": False,
+                "incident": {
+                    "incident_id": 88,
+                    "current_status": "resolved",
+                    "action_attempts": [],
+                },
+            }
+
+        def fake_get(url: str, headers: dict, timeout_seconds: float) -> dict:
+            calls["get"] += 1
+            return {"audit_events": [{"event_type": "incident.received"}]}
+
+        result = run_request(
+            request=request,
+            agent_url="http://agent.example.test",
+            workflow_secret="workflow-secret",
+            admin_secret="admin-secret",
+            post=fake_post,
+            get=fake_get,
+        )
+
+        self.assertEqual(calls, {"post": 1, "get": 1})
+        self.assertEqual(result["scenario"], "recovery")
+        self.assertTrue(all(check["ok"] for check in result["checks"]))
+
+    def test_drill_harness_dry_run_prints_request_without_secret(self) -> None:
+        request = request_from_payload_file(
+            payload_file=Path(__file__).parent / "fixtures" / "recovery.json",
+            expected_status="resolved",
+        )
+
+        result = dry_run_request(
+            request=request,
+            agent_url="http://agent.example.test",
+            workflow_secret="super-secret",
+        )
+
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["request"]["method"], "POST")
+        self.assertEqual(
+            result["request"]["url"],
+            "http://agent.example.test/webhooks/teams/betterstack",
+        )
+        self.assertEqual(
+            result["request"]["headers"]["X-HCWW-Workflow-Secret"],
+            "[configured]",
+        )
+        self.assertNotIn("super-secret", json.dumps(result))
+
+    def test_drill_cli_strict_fails_when_payload_file_expectation_fails(self) -> None:
+        payload_file = Path(self.temp_dir.name) / "custom_payload.json"
+        payload_file.write_text(json.dumps(validation_example_payload()))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = drill_main(
+                [
+                    "--payload-file",
+                    str(payload_file),
+                    "--expect-audit-event",
+                    "incident.received",
+                    "--strict",
+                ]
+            )
+
+        body = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(body["drills"][0]["checks"][0]["name"], "request")
+
+    def test_drill_cli_dry_run_uses_payload_file(self) -> None:
+        payload_file = Path(self.temp_dir.name) / "custom_payload.json"
+        payload_file.write_text(json.dumps(validation_example_payload()))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = drill_main(
+                [
+                    "--payload-file",
+                    str(payload_file),
+                    "--expect-status",
+                    "resolved",
+                    "--dry-run",
+                    "--workflow-secret",
+                    "super-secret",
+                ]
+            )
+
+        body = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(body["drills"][0]["dry_run"])
+        self.assertEqual(body["drills"][0]["expected"]["current_status"], "resolved")
+        self.assertNotIn("super-secret", output.getvalue())
 
     def test_drill_harness_replays_with_fake_http_clients(self) -> None:
         calls = {"post": 0, "get": 0}

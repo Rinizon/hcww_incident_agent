@@ -48,6 +48,7 @@ Incoming Better Stack workflow payloads are now:
 - able to attempt cache purge and redeploy playbooks with verification after each action
 - requires explicit deploy success signals before considering redeploy actions successful
 - tracked with persisted remediation action attempts and retry-limited playbook execution
+- supports fixture and payload-file drill replay with dry-run inspection
 - protected by duplicate event suppression, cooldown-based loop prevention, and per-playbook retry limits
 - protected by fail-closed workflow webhook authentication outside explicit development mode
 - packaged with `.env` and local state excluded from Docker builds and runs as a non-root container user
