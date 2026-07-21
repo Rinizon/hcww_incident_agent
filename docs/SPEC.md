@@ -15,6 +15,8 @@ Status: Complete.
 
 ## Step 2: Add Strict URL Allowlisting and SSRF Protection
 
+Status: Complete.
+
 - Validate `betterstack.monitor_url`, `HCWW_SMOKE_CHECK_URL`, and `HCWW_CORE_SMOKE_URLS` before any DNS, HTTP, cache purge, or redeploy use.
 - Allow only expected HCWW origins such as `https://hcww.net` and `https://www.hcww.net`.
 - Reject localhost, private IP ranges, link-local addresses, unsupported schemes, embedded credentials, and unexpected ports.

@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from app.config import Settings
+from app.url_policy import URLPolicyError, validate_public_url
 
 
 FetchFn = Callable[[str, float], Dict[str, Any]]
@@ -65,9 +66,13 @@ class DiagnosticEngine:
         monitor_url = incident["betterstack"]["monitor_url"]
         target_url = self.settings.smoke_check_url or monitor_url
         expected_text = self.settings.smoke_check_expected_text
+        check_urls = self._build_check_urls(target_url)
+        policy_error = self._validate_check_urls(monitor_url, check_urls)
+        if policy_error:
+            return self._policy_blocked_result(target_url, policy_error)
+
         parsed = urlparse(target_url)
         hostname = parsed.hostname or ""
-        check_urls = self._build_check_urls(target_url)
 
         dns_result = self._run_dns_check(hostname)
         http_result = self._run_http_check(target_url, expected_text)
@@ -113,9 +118,31 @@ class DiagnosticEngine:
 
     def _run_http_check(self, url: str, expected_text: str) -> Dict[str, Any]:
         try:
+            validate_public_url(
+                url,
+                self.settings.allowed_public_origin_values,
+                "diagnostic url",
+            )
+        except URLPolicyError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        try:
             result = self.fetch(url, self.settings.diagnostic_timeout_seconds)
         except Exception as exc:  # pragma: no cover - exercised with fake fetcher in tests
             return {"ok": False, "error": str(exc)}
+
+        final_url = result.get("final_url")
+        if isinstance(final_url, str) and final_url:
+            try:
+                validate_public_url(
+                    final_url,
+                    self.settings.allowed_public_origin_values,
+                    "diagnostic final_url",
+                )
+            except URLPolicyError as exc:
+                result["ok"] = False
+                result["error"] = str(exc)
+                return result
 
         body_excerpt = result.get("body_excerpt", "")
         expected_text_present = None
@@ -125,6 +152,37 @@ class DiagnosticEngine:
 
         result["expected_text_present"] = expected_text_present
         return result
+
+    def _validate_check_urls(self, monitor_url: str, check_urls: List[str]) -> Optional[str]:
+        try:
+            validate_public_url(
+                monitor_url,
+                self.settings.allowed_public_origin_values,
+                "incident monitor_url",
+            )
+            for index, url in enumerate(check_urls, start=1):
+                validate_public_url(
+                    url,
+                    self.settings.allowed_public_origin_values,
+                    f"diagnostic check url {index}",
+                )
+        except URLPolicyError as exc:
+            return str(exc)
+        return None
+
+    def _policy_blocked_result(self, target_url: str, reason: str) -> Dict[str, Any]:
+        summary = f"Diagnostics blocked by URL policy for {target_url}: {reason}"
+        return {
+            "target_url": target_url,
+            "hostname": "",
+            "dns": {"ok": False, "error": reason, "addresses": []},
+            "http": {"ok": False, "error": reason},
+            "http_checks": [],
+            "contact": None,
+            "summary": summary,
+            "outcome_status": "escalated",
+            "outcome_reason": reason,
+        }
 
     def _run_contact_checks(self, monitor_url: str) -> Dict[str, Any]:
         base_url = self._origin_for_url(monitor_url)

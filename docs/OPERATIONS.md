@@ -72,6 +72,7 @@ Deploy-specific settings:
 
 Diagnostic-specific settings:
 
+- `HCWW_ALLOWED_PUBLIC_ORIGINS`
 - `HCWW_SMOKE_CHECK_URL`
 - `HCWW_CORE_SMOKE_URLS`
 - `HCWW_SMOKE_CHECK_EXPECTED_TEXT`
@@ -89,6 +90,12 @@ Recommended production starting values:
 other than `development`. `BETTERSTACK_WEBHOOK_SHARED_SECRET` is accepted as a
 legacy fallback secret name, but new deployments should use
 `TEAMS_WORKFLOW_SHARED_SECRET`.
+
+`HCWW_ALLOWED_PUBLIC_ORIGINS` defaults to `https://hcww.net,https://www.hcww.net`.
+The agent rejects webhook monitor URLs, smoke-check URLs, core route URLs, and
+redirect targets outside this allowlist. Only add origins after confirming they
+are HCWW-owned public HTTPS surfaces and do not point at private, local, or
+internal services.
 
 Start production in diagnostics-only mode. Enable `HCWW_ENABLE_CACHE_PURGE` and
 `HCWW_ENABLE_REDEPLOY` only after validating credentials and running supervised
@@ -122,6 +129,8 @@ curl -s http://127.0.0.1:8787/healthz
 
 The health response includes a `remediation` block showing whether the agent is
 running in diagnostics-only mode or has mutating playbooks enabled.
+It also includes a `url_policy` block showing the currently allowed public
+origins and redirect-target validation status.
 
 Inspect the webhook schema:
 

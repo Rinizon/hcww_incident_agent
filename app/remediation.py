@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
 from app.store import IncidentStore
+from app.url_policy import URLPolicyError, validate_public_url
 
 
 class CloudflareClient:
@@ -245,6 +246,14 @@ class RemediationEngine:
 
         incident_type = incident["incident_type"]
         route = incident["betterstack"]["monitor_url"]
+        try:
+            validate_public_url(
+                route,
+                self.settings.allowed_public_origin_values,
+                "incident monitor_url",
+            )
+        except URLPolicyError:
+            return []
         steps: List[Dict[str, Any]] = []
 
         if incident_type in {"edge", "availability", "contact_path"} and self.settings.enable_cache_purge:

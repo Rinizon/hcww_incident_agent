@@ -12,7 +12,7 @@
     "alert_id": "alert-dns-789",
     "incident_id": "incident-dns-789",
     "monitor_name": "hcww dns",
-    "monitor_url": "https://dns-fail.hcww.net/",
+    "monitor_url": "https://hcww.net/",
     "status": "down",
     "alert_type": "monitor.down",
     "check_timestamp": "2026-07-18T12:34:00Z",

@@ -33,7 +33,7 @@ def _mutate_redeploy_failure(payload: Dict[str, Any]) -> None:
     payload["event_id"] = "evt_drill_redeploy_0001"
     payload["betterstack"]["alert_id"] = "alert-drill-redeploy-789"
     payload["betterstack"]["incident_id"] = "incident-drill-redeploy-789"
-    payload["betterstack"]["monitor_url"] = "https://redeploy-fail.hcww.net/"
+    payload["betterstack"]["monitor_url"] = "https://hcww.net/redeploy-fail/"
     payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
 
 

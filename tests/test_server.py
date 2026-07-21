@@ -344,6 +344,37 @@ class ApplicationTestCase(unittest.TestCase):
                 body=json.dumps(payload).encode("utf-8"),
             )
 
+    def test_webhook_rejects_disallowed_monitor_url(self) -> None:
+        payload = validation_example_payload()
+        payload["betterstack"]["monitor_url"] = "http://169.254.169.254/latest/meta-data/"
+
+        with self.assertRaises(PayloadValidationError):
+            self.app.handle_webhook(
+                headers={"X-HCWW-Workflow-Secret": "test-secret"},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+
+        self.assertEqual(self.app.list_incidents()["incidents"], [])
+        self.assertEqual(self.fetch_calls, {})
+
+    def test_settings_reject_private_smoke_check_url(self) -> None:
+        with self.assertRaises(ValueError):
+            Settings(
+                db_path=os.path.join(self.temp_dir.name, "private_smoke.db"),
+                env="test",
+                workflow_shared_secret="test-secret",
+                smoke_check_url="https://127.0.0.1/",
+            )
+
+    def test_settings_reject_unexpected_core_smoke_origin(self) -> None:
+        with self.assertRaises(ValueError):
+            Settings(
+                db_path=os.path.join(self.temp_dir.name, "bad_core_origin.db"),
+                env="test",
+                workflow_shared_secret="test-secret",
+                core_smoke_urls="https://example.com/",
+            )
+
     def test_self_generated_agent_message_is_ignored(self) -> None:
         payload = validation_example_payload()
         payload["event_id"] = "evt_self_generated_1"
@@ -416,7 +447,7 @@ class ApplicationTestCase(unittest.TestCase):
         settings = Settings(
             db_path=os.path.join(self.temp_dir.name, "route_checks.db"),
             smoke_check_expected_text="Hill Country Web Works",
-            core_smoke_urls="https://hcww.net/services/, https://route-fail.hcww.net/pricing/",
+            core_smoke_urls="https://hcww.net/services/, https://hcww.net/route-fail/pricing/",
         )
         diagnostics = DiagnosticEngine(
             settings=settings,
@@ -435,7 +466,7 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(len(result["http_checks"]), 3)
         self.assertEqual(result["http"]["headers"]["content-type"], "text/html")
         failed = [check for check in result["http_checks"] if not check["result"].get("ok")]
-        self.assertEqual(failed[0]["url"], "https://route-fail.hcww.net/pricing/")
+        self.assertEqual(failed[0]["url"], "https://hcww.net/route-fail/pricing/")
 
     def test_contact_diagnostics_validate_expected_form_action(self) -> None:
         def contact_fetch(url: str, timeout_seconds: float) -> dict:
@@ -482,9 +513,40 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertFalse(result["contact"]["form_action_present"])
         self.assertEqual(remediation.plan(incident, result), [])
 
+    def test_diagnostics_reject_redirect_to_disallowed_origin(self) -> None:
+        def redirect_fetch(url: str, timeout_seconds: float) -> dict:
+            return {
+                "ok": True,
+                "status_code": 200,
+                "final_url": "https://example.com/",
+                "headers": {"content-type": "text/html"},
+                "body_excerpt": "Hill Country Web Works homepage",
+                "latency_ms": 10,
+            }
+
+        settings = Settings(
+            db_path=os.path.join(self.temp_dir.name, "redirect_policy.db"),
+            smoke_check_expected_text="Hill Country Web Works",
+        )
+        diagnostics = DiagnosticEngine(
+            settings=settings,
+            fetch=redirect_fetch,
+            resolve=self.fake_resolve,
+        )
+        incident = {
+            "incident_type": "availability",
+            "betterstack": {"monitor_url": "https://hcww.net/"},
+        }
+
+        result = diagnostics.run(incident)
+
+        self.assertEqual(result["outcome_status"], "escalated")
+        self.assertFalse(result["http"]["ok"])
+        self.assertIn("origin is not allowed", result["http"]["error"])
+
     def test_webhook_escalates_when_public_checks_fail(self) -> None:
         payload = self.load_fixture("edge_down.json")
-        payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/down/"
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
 
         status_code, body = self.app.handle_webhook(
@@ -503,7 +565,7 @@ class ApplicationTestCase(unittest.TestCase):
 
     def test_remediation_attempt_is_started_before_external_mutation(self) -> None:
         payload = self.load_fixture("edge_down.json")
-        payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/down/"
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
         inspecting_cloudflare = InspectingCloudflareClient(self.app)
         self.remediation.cloudflare = inspecting_cloudflare
@@ -555,7 +617,7 @@ class ApplicationTestCase(unittest.TestCase):
         )
         remediation.store = app.store
         payload = self.load_fixture("edge_down.json")
-        payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/down/"
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
 
         status_code, body = app.handle_webhook(
@@ -574,7 +636,10 @@ class ApplicationTestCase(unittest.TestCase):
 
     def test_webhook_escalates_when_dns_fails(self) -> None:
         payload = self.load_fixture("dns_failure.json")
-        payload["betterstack"]["monitor_url"] = "https://dns-fail.hcww.net/"
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/"
+        self.diagnostics.resolve = lambda hostname: (_ for _ in ()).throw(
+            RuntimeError("Name or service not known")
+        )
 
         status_code, body = self.app.handle_webhook(
             headers={"X-HCWW-Workflow-Secret": "test-secret"},
@@ -587,7 +652,7 @@ class ApplicationTestCase(unittest.TestCase):
 
     def test_webhook_redeploys_when_cache_purge_does_not_recover(self) -> None:
         payload = self.load_fixture("edge_down.json")
-        payload["betterstack"]["monitor_url"] = "https://redeploy-fail.hcww.net/"
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/redeploy-fail/"
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
 
         status_code, body = self.app.handle_webhook(
@@ -666,7 +731,7 @@ class ApplicationTestCase(unittest.TestCase):
         payload = self.load_fixture("edge_down.json")
         payload["event_id"] = "evt_repeat_1"
         payload["betterstack"]["incident_id"] = "incident-repeat"
-        payload["betterstack"]["monitor_url"] = "https://redeploy-fail.hcww.net/"
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/redeploy-fail/"
         payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
         _, first_body = self.app.handle_webhook(
             headers={"X-HCWW-Workflow-Secret": "test-secret"},
@@ -1013,7 +1078,7 @@ class ApplicationTestCase(unittest.TestCase):
 
         self.assertEqual(payload["event_id"], "evt_drill_redeploy_0001")
         self.assertEqual(payload["betterstack"]["incident_id"], "incident-drill-redeploy-789")
-        self.assertEqual(payload["betterstack"]["monitor_url"], "https://redeploy-fail.hcww.net/")
+        self.assertEqual(payload["betterstack"]["monitor_url"], "https://hcww.net/redeploy-fail/")
 
     def test_drill_harness_evaluates_expected_results(self) -> None:
         scenario = SCENARIOS["self-recovery"]

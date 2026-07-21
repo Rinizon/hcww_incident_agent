@@ -4,6 +4,13 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.url_policy import (
+    DEFAULT_ALLOWED_PUBLIC_ORIGINS,
+    parse_allowed_origins,
+    validate_optional_public_url,
+    validate_public_url_csv,
+)
+
 
 def _load_dotenv() -> None:
     candidate_paths = [
@@ -73,6 +80,9 @@ class Settings:
     deploy_mode: str = field(default_factory=lambda: _env("HCWW_DEPLOY_MODE", "deploy_hook"))
     deploy_base_url: str = field(default_factory=lambda: _env("HCWW_DEPLOY_BASE_URL", ""))
     deploy_api_token: str = field(default_factory=lambda: _env("HCWW_DEPLOY_API_TOKEN", ""))
+    allowed_public_origins: str = field(
+        default_factory=lambda: _env("HCWW_ALLOWED_PUBLIC_ORIGINS", DEFAULT_ALLOWED_PUBLIC_ORIGINS)
+    )
     smoke_check_url: str = field(default_factory=lambda: _env("HCWW_SMOKE_CHECK_URL", ""))
     core_smoke_urls: str = field(default_factory=lambda: _env("HCWW_CORE_SMOKE_URLS", ""))
     smoke_check_expected_text: str = field(default_factory=lambda: _env("HCWW_SMOKE_CHECK_EXPECTED_TEXT", ""))
@@ -90,3 +100,18 @@ class Settings:
                 "TEAMS_WORKFLOW_SHARED_SECRET is required when "
                 "HCWW_AGENT_ENV is not development"
             )
+        allowed_origins = parse_allowed_origins(self.allowed_public_origins)
+        validate_optional_public_url(
+            self.smoke_check_url,
+            allowed_origins,
+            "HCWW_SMOKE_CHECK_URL",
+        )
+        validate_public_url_csv(
+            self.core_smoke_urls,
+            allowed_origins,
+            "HCWW_CORE_SMOKE_URLS",
+        )
+
+    @property
+    def allowed_public_origin_values(self) -> tuple[str, ...]:
+        return parse_allowed_origins(self.allowed_public_origins)

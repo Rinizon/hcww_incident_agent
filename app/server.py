@@ -14,6 +14,7 @@ from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
 from app.remediation import RemediationEngine
 from app.schema import PayloadValidationError, describe_webhook_schema, validate_webhook_payload
 from app.store import IncidentStore
+from app.url_policy import URLPolicyError, validate_public_url
 
 
 class IncidentAgentApplication:
@@ -41,6 +42,7 @@ class IncidentAgentApplication:
             "environment": self.settings.env,
             "checks": self.store.health(),
             "auth": self._auth_status(),
+            "url_policy": self._url_policy_status(),
             "remediation": self._remediation_status(),
         }
 
@@ -54,6 +56,7 @@ class IncidentAgentApplication:
             raise PayloadValidationError("Request body must be valid JSON") from exc
 
         validated = validate_webhook_payload(payload)
+        self._validate_webhook_urls(validated)
         if self._is_self_generated_event(validated):
             return (
                 HTTPStatus.ACCEPTED,
@@ -125,6 +128,7 @@ class IncidentAgentApplication:
     def schema_document(self) -> Dict[str, Any]:
         schema = describe_webhook_schema()
         schema["auth"] = self._auth_status()
+        schema["url_policy"] = self._url_policy_status()
         schema["remediation"] = self._remediation_status()
         schema["teams_posting"] = self._teams_posting_contract()
         return schema
@@ -148,6 +152,16 @@ class IncidentAgentApplication:
         actual = self._get_header(headers, "X-HCWW-Admin-Secret")
         if not hmac.compare_digest(actual, expected):
             raise PermissionError("Missing or invalid admin shared secret")
+
+    def _validate_webhook_urls(self, validated: Dict[str, Any]) -> None:
+        try:
+            validate_public_url(
+                validated["betterstack"]["monitor_url"],
+                self.settings.allowed_public_origin_values,
+                "payload.betterstack.monitor_url",
+            )
+        except URLPolicyError as exc:
+            raise PayloadValidationError(str(exc)) from exc
 
     def _get_header(self, headers: Dict[str, str], name: str) -> str:
         for key, value in headers.items():
@@ -186,6 +200,14 @@ class IncidentAgentApplication:
                 "header": "X-HCWW-Admin-Secret",
                 "configured": bool(self.settings.admin_shared_secret),
             },
+        }
+
+    def _url_policy_status(self) -> Dict[str, Any]:
+        return {
+            "allowed_public_origins": list(self.settings.allowed_public_origin_values),
+            "https_required": True,
+            "rejects_private_local_and_ip_literal_targets": True,
+            "validates_redirect_targets": True,
         }
 
     def _teams_posting_contract(self) -> Dict[str, Any]:
