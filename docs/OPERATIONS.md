@@ -313,12 +313,13 @@ The current implementation includes:
 - persisted action attempts with `started`, `failed`, `succeeded`, and `verified` statuses
 - configurable route and contact-path diagnostics before mutation
 - persisted audit trail for notifier and lifecycle events
+- centralized redaction for raw payloads, secrets, sensitive headers, deploy/webhook URLs, and large body excerpts
 - playbook feature flags for risky actions
 
 ## Routine Operator Checks
 
 - Review recent incidents via `GET /incidents`
-- Review audit history for escalated incidents
+- Review redacted audit history for escalated incidents
 - Confirm the SQLite database file is retained and backed up appropriately for the environment
 - Check that Teams delivery is still functioning after any workflow or connector changes
 - Revalidate Cloudflare and deploy credentials after rotation

@@ -11,6 +11,7 @@ from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
 from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
+from app.redaction import redact_data
 from app.remediation import RemediationEngine
 from app.schema import PayloadValidationError, describe_webhook_schema, validate_webhook_payload
 from app.store import IncidentStore
@@ -124,7 +125,12 @@ class IncidentAgentApplication:
         self._validate_admin_secret(headers)
         if self.store.get_incident(incident_id) is None:
             return None
-        return {"audit_events": self.store.list_audit_events(incident_id)}
+        return {
+            "audit_events": [
+                self._redact_audit_event(event)
+                for event in self.store.list_audit_events(incident_id)
+            ]
+        }
 
     def schema_document(self) -> Dict[str, Any]:
         schema = describe_webhook_schema()
@@ -230,20 +236,12 @@ class IncidentAgentApplication:
         }
 
     def _redact_incident(self, incident: Dict[str, Any]) -> Dict[str, Any]:
-        redacted = dict(incident)
+        redacted = redact_data(dict(incident))
         redacted.pop("raw_payload", None)
-        redacted["action_attempts"] = [
-            self._redact_action_attempt(attempt)
-            for attempt in incident.get("action_attempts", [])
-        ]
         return redacted
 
-    def _redact_action_attempt(self, attempt: Dict[str, Any]) -> Dict[str, Any]:
-        redacted = dict(attempt)
-        result = dict(redacted.get("result") or {})
-        result.pop("target_url", None)
-        redacted["result"] = result
-        return redacted
+    def _redact_audit_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        return redact_data(event)
 
     def _is_self_generated_event(self, validated: Dict[str, Any]) -> bool:
         betterstack = validated.get("betterstack", {})

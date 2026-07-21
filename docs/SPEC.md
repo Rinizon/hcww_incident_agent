@@ -42,6 +42,8 @@ Status: Complete.
 
 ## Step 5: Centralize Redaction for Stored and Returned Data
 
+Status: Complete.
+
 - Create a shared redaction helper for incident details, audit events, action attempts, diagnostics, and notifier payloads.
 - Strip sensitive headers such as `Authorization`, cookies, webhook URLs, deploy URLs, API tokens, and raw payload fields that may contain secrets.
 - Limit body excerpts stored in SQLite and returned from admin endpoints to the minimum needed for troubleshooting.

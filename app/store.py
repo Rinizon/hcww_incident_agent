@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
+from app.redaction import redact_data
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -129,7 +131,7 @@ class IncidentStore:
         external_key = payload["external_incident_key"]
         betterstack = payload["betterstack"]
         teams = payload["teams"]
-        raw_payload_json = json.dumps(payload["raw_payload"], sort_keys=True)
+        raw_payload_json = json.dumps(redact_data(payload["raw_payload"]), sort_keys=True)
         normalized_severity = classification["normalized_severity"]
         incident_type = classification["incident_type"]
         current_status = classification["current_status"]
@@ -410,7 +412,7 @@ class IncidentStore:
                         incident_id,
                         playbook_name,
                         action_type,
-                        json.dumps(inputs, sort_keys=True),
+                        json.dumps(redact_data(inputs), sort_keys=True),
                         json.dumps({}, sort_keys=True),
                         json.dumps({}, sort_keys=True),
                         "started",
@@ -445,8 +447,8 @@ class IncidentStore:
                     """,
                     (
                         status,
-                        json.dumps(result, sort_keys=True),
-                        json.dumps(verification, sort_keys=True),
+                        json.dumps(redact_data(result), sort_keys=True),
+                        json.dumps(redact_data(verification), sort_keys=True),
                         error,
                         now,
                         action_id,
@@ -534,7 +536,7 @@ class IncidentStore:
                 incident_id,
                 event_type,
                 summary,
-                json.dumps(details, sort_keys=True),
+                json.dumps(redact_data(details), sort_keys=True),
                 created_at or utc_now_iso(),
             ),
         )

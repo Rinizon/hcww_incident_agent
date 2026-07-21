@@ -34,6 +34,7 @@ Incoming Better Stack workflow payloads are now:
 - normalized into an incident type
 - assigned a first-pass HCWW severity such as `sev1` to `sev4`
 - stored in SQLite with triage audit events
+- redacted at storage and admin response boundaries for secrets, sensitive URLs, headers, and large body excerpts
 - moved through lifecycle states including `diagnosing`, `resolved`, and `escalated`
 - checked with initial DNS and HTTP diagnostics
 - able to run configurable core route and contact-path smoke checks

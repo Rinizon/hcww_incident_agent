@@ -10,6 +10,7 @@ from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
 from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
+from app.redaction import MAX_BODY_EXCERPT_CHARS, REDACTED
 from app.remediation import (
     CloudflareClient,
     DeployClient,
@@ -275,6 +276,8 @@ class ApplicationTestCase(unittest.TestCase):
 
     def test_admin_incident_reads_are_redacted(self) -> None:
         payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["metadata"]["api_token"] = "metadata-secret-token"
+        payload["betterstack"]["metadata"]["raw_payload"] = {"secret": "nested-secret"}
         status_code, body = self.app.handle_webhook(
             headers={"X-HCWW-Workflow-Secret": "test-secret"},
             body=json.dumps(payload).encode("utf-8"),
@@ -303,6 +306,95 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertIsNotNone(audit)
         assert audit is not None
         self.assertGreater(len(audit["audit_events"]), 0)
+        serialized = json.dumps({"detail": detail, "audit": audit})
+        self.assertNotIn("metadata-secret-token", serialized)
+        self.assertNotIn("nested-secret", serialized)
+
+    def test_admin_audit_redacts_sensitive_details_from_existing_rows(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        _status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        incident_id = body["incident"]["incident_id"]
+        self.app.store.add_audit_event(
+            incident_id=incident_id,
+            event_type="test.sensitive",
+            summary="Sensitive details",
+            details={
+                "headers": {
+                    "Authorization": "Bearer secret-token",
+                    "Cookie": "session=secret-cookie",
+                    "content-type": "application/json",
+                },
+                "target_url": "https://deploy.example.com/hooks/redeploy",
+                "raw_payload": {"secret": "payload-secret"},
+                "body_excerpt": "x" * (MAX_BODY_EXCERPT_CHARS + 25),
+            },
+        )
+
+        audit = self.app.handle_admin_get_incident_audit(
+            headers={"X-HCWW-Admin-Secret": "admin-secret"},
+            incident_id=incident_id,
+        )
+
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        sensitive_event = next(
+            event
+            for event in audit["audit_events"]
+            if event["event_type"] == "test.sensitive"
+        )
+        details = sensitive_event["details"]
+        self.assertEqual(details["headers"]["Authorization"], REDACTED)
+        self.assertEqual(details["headers"]["Cookie"], REDACTED)
+        self.assertEqual(details["headers"]["content-type"], "application/json")
+        self.assertEqual(details["target_url"], REDACTED)
+        self.assertEqual(details["raw_payload"], REDACTED)
+        self.assertLessEqual(
+            len(details["body_excerpt"]),
+            MAX_BODY_EXCERPT_CHARS + len("...[truncated]"),
+        )
+
+    def test_admin_incident_redacts_sensitive_action_attempt_details(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        incident_id = body["incident"]["incident_id"]
+        self.app.store.record_action_attempt(
+            incident_id=incident_id,
+            playbook_name="known_good_redeploy",
+            action_type="redeploy",
+            inputs={"target": "https://deploy.example.com/hooks/redeploy"},
+            result={
+                "ok": False,
+                "target_url": "https://deploy.example.com/hooks/redeploy",
+                "headers": {"Authorization": "Bearer deploy-secret"},
+                "reason": "failed",
+            },
+            verification={
+                "outcome_status": "escalated",
+                "body_excerpt": "y" * (MAX_BODY_EXCERPT_CHARS + 10),
+            },
+        )
+
+        detail = self.app.handle_admin_get_incident(
+            headers={"X-HCWW-Admin-Secret": "admin-secret"},
+            incident_id=incident_id,
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        serialized = json.dumps(detail)
+        self.assertNotIn("deploy.example.com", serialized)
+        self.assertNotIn("deploy-secret", serialized)
+        attempt = detail["action_attempts"][-1]
+        self.assertEqual(attempt["inputs"]["target"], REDACTED)
+        self.assertEqual(attempt["result"]["target_url"], REDACTED)
+        self.assertEqual(attempt["result"]["headers"]["Authorization"], REDACTED)
 
     def test_admin_incident_reads_fail_when_secret_is_unconfigured(self) -> None:
         settings = Settings(
