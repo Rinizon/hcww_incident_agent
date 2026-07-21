@@ -22,10 +22,9 @@ The incident agent is responsible for:
 - Standard Teams channel for Better Stack incident posts
 - Teams Workflows or Power Automate flow in the default environment
 - Shared secret for webhook authentication
-- Teams posting mode decision:
-  - `workflow` for workflow-managed posting
-  - `webhook` for direct outgoing webhook style posting
-  - future Graph API path if threaded reply requirements outgrow current connector limits
+- `TEAMS_POST_MODE=workflow` for V1 production threaded replies
+- `TEAMS_POST_MODE=webhook` only as a non-threaded Adaptive Card fallback
+- future Graph API path if workflow-managed threaded replies outgrow connector limits
 
 ### Better Stack
 
@@ -149,6 +148,24 @@ Payload requirements:
 - status
 - check timestamp
 - raw alert text
+
+V1 Teams posting decision:
+
+- production uses workflow-managed threaded replies
+- the agent returns and audits a workflow payload for each lifecycle phase
+- the workflow posts `text` as a reply to `reply_target_message_id`
+- `reply_target_message_id` is `reply_to_message_id` when present, otherwise `root_message_id`
+- direct webhook mode can post Adaptive Cards, but should not be treated as authoritative threaded reply behavior
+
+Agent update payload fields:
+
+- `marker`: automation marker used to suppress self-generated workflow events
+- `phase`: one of `acknowledged`, `diagnosis`, `remediation_started`, `verifying`, `remediation_completed`, `resolved`, or `escalated`
+- `title`: human-readable update title
+- `text`: formatted message body for Teams
+- `details`: structured evidence for the phase
+- `teams`: original Teams context
+- `reply_target_message_id`: message ID the workflow should reply to
 
 ## Deployment Checklist
 

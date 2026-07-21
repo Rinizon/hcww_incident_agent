@@ -8,7 +8,7 @@ from pathlib import Path
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
-from app.notifier import AGENT_MESSAGE_MARKER, TeamsNotifier
+from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
 from app.remediation import (
     CloudflareClient,
     DeployClient,
@@ -842,6 +842,85 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(body[1]["text"], "TEST incident is being diagnosed.")
         facts = body[2]["facts"]
         self.assertTrue(any(f["title"] == "Severity" and f["value"] == "sev1" for f in facts))
+
+    def test_workflow_notifier_contract_covers_lifecycle_phases(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            teams_post_mode="workflow",
+        )
+        notifier = TeamsNotifier(settings=settings)
+        incident = {
+            "incident_id": 101,
+            "external_incident_key": "incident-101",
+            "teams": {
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+                "root_message_id": "root-msg",
+                "reply_to_message_id": "reply-msg",
+            },
+        }
+
+        for phase in SUPPORTED_PHASES:
+            with self.subTest(phase=phase):
+                result = notifier.send_incident_update(
+                    incident=incident,
+                    phase=phase,
+                    message=f"{phase} message",
+                    details={"phase": phase},
+                )
+                payload = result["payload"]
+
+                self.assertFalse(result["posted"])
+                self.assertEqual(result["mode"], "workflow")
+                self.assertEqual(payload["source"], "hcww_incident_agent")
+                self.assertEqual(payload["marker"], AGENT_MESSAGE_MARKER)
+                self.assertEqual(payload["phase"], phase)
+                self.assertEqual(payload["reply_target_message_id"], "reply-msg")
+                self.assertTrue(payload["delivery"]["threaded_reply_required"])
+                self.assertEqual(payload["delivery"]["mode"], "workflow")
+                self.assertIn(AGENT_MESSAGE_MARKER, payload["text"])
+                self.assertEqual(result["raw_payload"], payload)
+
+        self.assertEqual(len(notifier.sent_messages), len(SUPPORTED_PHASES))
+
+    def test_workflow_notifier_uses_root_message_when_reply_target_missing(self) -> None:
+        notifier = TeamsNotifier(settings=self.settings)
+        incident = {
+            "incident_id": 102,
+            "external_incident_key": "incident-102",
+            "teams": {
+                "team_id": "team-1",
+                "channel_id": "channel-1",
+                "root_message_id": "root-msg",
+                "reply_to_message_id": None,
+            },
+        }
+
+        result = notifier.send_incident_update(
+            incident=incident,
+            phase="diagnosis",
+            message="diagnosis message",
+            details={},
+        )
+
+        self.assertEqual(result["payload"]["reply_target_message_id"], "root-msg")
+
+    def test_schema_documents_teams_posting_contract(self) -> None:
+        schema = self.app.schema_document()
+
+        self.assertEqual(
+            schema["teams_posting"]["v1_decision"],
+            "workflow_managed_threaded_replies",
+        )
+        self.assertEqual(schema["teams_posting"]["supported_phases"], SUPPORTED_PHASES)
+        self.assertEqual(schema["teams_posting"]["agent_marker"], AGENT_MESSAGE_MARKER)
 
     def test_build_deploy_client_uses_deploy_hook_without_token(self) -> None:
         settings = Settings(

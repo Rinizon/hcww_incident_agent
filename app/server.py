@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
-from app.notifier import AGENT_MESSAGE_MARKER, TeamsNotifier
+from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
 from app.remediation import RemediationEngine
 from app.schema import PayloadValidationError, describe_webhook_schema, validate_webhook_payload
 from app.store import IncidentStore
@@ -124,6 +124,7 @@ class IncidentAgentApplication:
     def schema_document(self) -> Dict[str, Any]:
         schema = describe_webhook_schema()
         schema["remediation"] = self._remediation_status()
+        schema["teams_posting"] = self._teams_posting_contract()
         return schema
 
     def _validate_secret(self, headers: Dict[str, str]) -> None:
@@ -161,6 +162,16 @@ class IncidentAgentApplication:
                 "cloudflare_cache_purge": self.settings.enable_cache_purge,
                 "known_good_redeploy": self.settings.enable_redeploy,
             },
+        }
+
+    def _teams_posting_contract(self) -> Dict[str, Any]:
+        return {
+            "mode": self.settings.teams_post_mode,
+            "v1_decision": "workflow_managed_threaded_replies",
+            "fallback_mode": "webhook_non_threaded_adaptive_card",
+            "supported_phases": SUPPORTED_PHASES,
+            "workflow_reply_target": "reply_target_message_id",
+            "agent_marker": AGENT_MESSAGE_MARKER,
         }
 
     def _redact_incident(self, incident: Dict[str, Any]) -> Dict[str, Any]:
