@@ -42,6 +42,7 @@ class IncidentAgentApplication:
             "environment": self.settings.env,
             "checks": self.store.health(),
             "auth": self._auth_status(),
+            "request_policy": self._request_policy_status(),
             "url_policy": self._url_policy_status(),
             "remediation": self._remediation_status(),
         }
@@ -128,6 +129,7 @@ class IncidentAgentApplication:
     def schema_document(self) -> Dict[str, Any]:
         schema = describe_webhook_schema()
         schema["auth"] = self._auth_status()
+        schema["request_policy"] = self._request_policy_status()
         schema["url_policy"] = self._url_policy_status()
         schema["remediation"] = self._remediation_status()
         schema["teams_posting"] = self._teams_posting_contract()
@@ -208,6 +210,13 @@ class IncidentAgentApplication:
             "https_required": True,
             "rejects_private_local_and_ip_literal_targets": True,
             "validates_redirect_targets": True,
+        }
+
+    def _request_policy_status(self) -> Dict[str, Any]:
+        return {
+            "webhook_max_body_bytes": self.settings.max_webhook_body_bytes,
+            "webhook_content_type": "application/json",
+            "content_length_required": True,
         }
 
     def _teams_posting_contract(self) -> Dict[str, Any]:
@@ -475,7 +484,45 @@ def create_http_handler(app: IncidentAgentApplication):
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Route not found"})
                 return
 
-            content_length = int(self.headers.get("Content-Length", "0"))
+            content_type = self.headers.get("Content-Type", "")
+            if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                self._send_json(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                    {"error": "Content-Type must be application/json"},
+                )
+                return
+
+            raw_content_length = self.headers.get("Content-Length")
+            if raw_content_length is None:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Missing Content-Length header"},
+                )
+                return
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid Content-Length header"},
+                )
+                return
+            if content_length < 0:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid Content-Length header"},
+                )
+                return
+            if content_length > app.settings.max_webhook_body_bytes:
+                self._send_json(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    {
+                        "error": "Request body is too large",
+                        "max_bytes": app.settings.max_webhook_body_bytes,
+                    },
+                )
+                return
+
             body = self.rfile.read(content_length)
             try:
                 status_code, response = app.handle_webhook(dict(self.headers), body)

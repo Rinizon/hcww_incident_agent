@@ -55,6 +55,7 @@ Safety-sensitive settings:
 - `HCWW_MAX_REMEDIATION_ATTEMPTS`
 - `HCWW_MAX_PLAYBOOK_RETRIES`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS`
+- `HCWW_MAX_WEBHOOK_BODY_BYTES`
 - `HCWW_ENABLE_CACHE_PURGE`
 - `HCWW_ENABLE_REDEPLOY`
 
@@ -83,6 +84,7 @@ Recommended production starting values:
 - `HCWW_MAX_REMEDIATION_ATTEMPTS=2`
 - `HCWW_MAX_PLAYBOOK_RETRIES=1`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS=300`
+- `HCWW_MAX_WEBHOOK_BODY_BYTES=65536`
 - `HCWW_ENABLE_CACHE_PURGE=false`
 - `HCWW_ENABLE_REDEPLOY=false`
 
@@ -129,6 +131,8 @@ curl -s http://127.0.0.1:8787/healthz
 
 The health response includes a `remediation` block showing whether the agent is
 running in diagnostics-only mode or has mutating playbooks enabled.
+It includes a `request_policy` block showing the webhook body-size limit,
+required content type, and `Content-Length` requirement.
 It also includes a `url_policy` block showing the currently allowed public
 origins and redirect-target validation status.
 
@@ -178,6 +182,7 @@ The workflow should `POST` to:
 Headers:
 
 - `Content-Type: application/json`
+- `Content-Length: <byte length>` no larger than `HCWW_MAX_WEBHOOK_BODY_BYTES`
 - `X-HCWW-Workflow-Secret: <shared secret>`
 
 Incident read endpoints require:

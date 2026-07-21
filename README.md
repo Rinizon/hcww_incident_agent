@@ -30,6 +30,7 @@ The agent is implemented as a zero-dependency Python service with SQLite persist
 Incoming Better Stack workflow payloads are now:
 
 - validated against the webhook contract
+- bounded by explicit JSON content-type and webhook request size checks
 - normalized into an incident type
 - assigned a first-pass HCWW severity such as `sev1` to `sev4`
 - stored in SQLite with triage audit events

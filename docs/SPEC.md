@@ -24,6 +24,8 @@ Status: Complete.
 
 ## Step 3: Limit Inbound Request Size and Shape
 
+Status: Complete.
+
 - Enforce a maximum webhook body size suitable for Better Stack Teams workflow payloads.
 - Return `413 Payload Too Large` for oversized requests and `400 Bad Request` for invalid or missing `Content-Length`.
 - Require `Content-Type: application/json` on webhook requests.

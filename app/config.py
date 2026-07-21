@@ -88,6 +88,7 @@ class Settings:
     smoke_check_expected_text: str = field(default_factory=lambda: _env("HCWW_SMOKE_CHECK_EXPECTED_TEXT", ""))
     contact_form_expected_action: str = field(default_factory=lambda: _env("HCWW_CONTACT_FORM_EXPECTED_ACTION", ""))
     diagnostic_timeout_seconds: float = field(default_factory=lambda: float(_env("HCWW_DIAGNOSTIC_TIMEOUT_SECONDS", "10")))
+    max_webhook_body_bytes: int = field(default_factory=lambda: int(_env("HCWW_MAX_WEBHOOK_BODY_BYTES", "65536")))
     max_remediation_attempts: int = field(default_factory=lambda: int(_env("HCWW_MAX_REMEDIATION_ATTEMPTS", "2")))
     max_playbook_retries: int = field(default_factory=lambda: int(_env("HCWW_MAX_PLAYBOOK_RETRIES", "1")))
     remediation_cooldown_seconds: int = field(default_factory=lambda: int(_env("HCWW_REMEDIATION_COOLDOWN_SECONDS", "300")))
@@ -111,6 +112,8 @@ class Settings:
             allowed_origins,
             "HCWW_CORE_SMOKE_URLS",
         )
+        if self.max_webhook_body_bytes <= 0:
+            raise ValueError("HCWW_MAX_WEBHOOK_BODY_BYTES must be greater than zero")
 
     @property
     def allowed_public_origin_values(self) -> tuple[str, ...]:

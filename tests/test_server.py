@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -18,7 +19,7 @@ from app.remediation import (
     build_cloudflare_client,
     build_deploy_client,
 )
-from app.server import IncidentAgentApplication
+from app.server import IncidentAgentApplication, create_http_handler
 from app.schema import PayloadValidationError, validation_example_payload
 from tools.drill_agent import SCENARIOS, evaluate_result, list_scenarios, load_payload, run_scenario
 
@@ -139,6 +140,27 @@ class ApplicationTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def post_webhook_http(
+        self,
+        app: IncidentAgentApplication,
+        body: bytes,
+        headers: dict,
+    ) -> tuple[int, dict]:
+        handler_class = create_http_handler(app)
+        handler = handler_class.__new__(handler_class)
+        handler.path = "/webhooks/teams/betterstack"
+        handler.headers = headers
+        handler.rfile = io.BytesIO(body)
+        captured = {}
+
+        def capture_json(status_code: int, payload: dict) -> None:
+            captured["status"] = status_code
+            captured["payload"] = payload
+
+        handler._send_json = capture_json
+        handler_class.do_POST(handler)
+        return int(captured["status"]), captured["payload"]
 
     def test_health_endpoint_logic(self) -> None:
         body = self.app.handle_health()
@@ -343,6 +365,89 @@ class ApplicationTestCase(unittest.TestCase):
                 headers={"X-HCWW-Workflow-Secret": "test-secret"},
                 body=json.dumps(payload).encode("utf-8"),
             )
+
+    def test_http_webhook_accepts_valid_json_request_shape(self) -> None:
+        encoded = json.dumps(validation_example_payload()).encode("utf-8")
+
+        status, body = self.post_webhook_http(
+            self.app,
+            encoded,
+            {
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Length": str(len(encoded)),
+                "X-HCWW-Workflow-Secret": "test-secret",
+            },
+        )
+
+        self.assertEqual(status, 202)
+        self.assertEqual(body["status"], "accepted")
+
+    def test_http_webhook_rejects_oversized_body_before_read(self) -> None:
+        settings = Settings(
+            db_path=os.path.join(self.temp_dir.name, "small_body_limit.db"),
+            env="test",
+            workflow_shared_secret="test-secret",
+            max_webhook_body_bytes=8,
+        )
+        app = IncidentAgentApplication(settings=settings)
+        body = b'{"too":"large"}'
+
+        status, response = self.post_webhook_http(
+            app,
+            body,
+            {
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+                "X-HCWW-Workflow-Secret": "test-secret",
+            },
+        )
+
+        self.assertEqual(status, 413)
+        self.assertEqual(response["max_bytes"], 8)
+        self.assertEqual(app.list_incidents()["incidents"], [])
+
+    def test_http_webhook_rejects_invalid_content_length(self) -> None:
+        status, body = self.post_webhook_http(
+            self.app,
+            b"",
+            {
+                "Content-Type": "application/json",
+                "Content-Length": "not-a-number",
+                "X-HCWW-Workflow-Secret": "test-secret",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("Content-Length", body["error"])
+
+    def test_http_webhook_rejects_missing_content_length(self) -> None:
+        status, body = self.post_webhook_http(
+            self.app,
+            b"",
+            {
+                "Content-Type": "application/json",
+                "X-HCWW-Workflow-Secret": "test-secret",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("Content-Length", body["error"])
+
+    def test_http_webhook_rejects_non_json_content_type(self) -> None:
+        encoded = json.dumps(validation_example_payload()).encode("utf-8")
+
+        status, body = self.post_webhook_http(
+            self.app,
+            encoded,
+            {
+                "Content-Type": "text/plain",
+                "Content-Length": str(len(encoded)),
+                "X-HCWW-Workflow-Secret": "test-secret",
+            },
+        )
+
+        self.assertEqual(status, 415)
+        self.assertIn("application/json", body["error"])
 
     def test_webhook_rejects_disallowed_monitor_url(self) -> None:
         payload = validation_example_payload()
