@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -157,7 +158,10 @@ def _adjust_severity(
 
 
 def _is_recovery_signal(text_blob: str) -> bool:
-    return any(signal in text_blob for signal in ("recovered", "resolved", "up", "back up"))
+    return bool(
+        re.search(r"\b(recovered|resolved|up)\b", text_blob)
+        or re.search(r"\bback\s+up\b", text_blob)
+    )
 
 
 def _collect_signals(route: str, text_blob: str, betterstack: Dict[str, Any]) -> List[str]:

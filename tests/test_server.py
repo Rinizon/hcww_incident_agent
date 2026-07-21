@@ -321,6 +321,34 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(classification["normalized_severity"], "sev4")
         self.assertEqual(classification["current_status"], "resolved")
 
+    def test_classifier_does_not_treat_recovery_substrings_as_recovery(self) -> None:
+        for word in ("support", "update", "backup"):
+            with self.subTest(word=word):
+                payload = self.load_fixture("edge_down.json")
+                payload["betterstack"]["status"] = "down"
+                payload["betterstack"]["severity"] = "critical"
+                payload["betterstack"]["alert_type"] = "monitor.down"
+                payload["betterstack"]["raw_body"] = f"Cloudflare 523 during {word} check"
+
+                classification = classify_incident({"betterstack": payload["betterstack"]})
+
+                self.assertNotEqual(classification["incident_type"], "recovery")
+                self.assertNotEqual(classification["current_status"], "resolved")
+                self.assertNotIn("recovery-signal", classification["signals"])
+
+    def test_classifier_treats_standalone_up_status_as_recovery(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["status"] = "up"
+        payload["betterstack"]["severity"] = ""
+        payload["betterstack"]["alert_type"] = "monitor.up"
+        payload["betterstack"]["raw_body"] = "Monitor is up"
+
+        classification = classify_incident({"betterstack": payload["betterstack"]})
+
+        self.assertEqual(classification["incident_type"], "recovery")
+        self.assertEqual(classification["normalized_severity"], "sev4")
+        self.assertEqual(classification["current_status"], "resolved")
+
     def test_webhook_escalates_when_public_checks_fail(self) -> None:
         payload = self.load_fixture("edge_down.json")
         payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
