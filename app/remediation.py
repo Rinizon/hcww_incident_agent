@@ -102,17 +102,39 @@ class RealDeployClient(DeployClient):
                 "target_url": target_url,
             }
 
-        success = bool(response.get("success", True))
+        success = self._response_is_success(response)
         return {
             "ok": success,
             "action": "redeploy",
+            "action_status": "succeeded" if success else "failed",
             "deploy_mode": self.mode,
+            "success_signal": self._success_signal(response),
+            "reason": None if success else self._failure_reason(response),
             "target_url": target_url,
             "deploy_result": response.get("result"),
             "deploy_errors": response.get("errors", []),
             "deploy_messages": response.get("messages", []),
             "http_status": response.get("_http_status"),
         }
+
+    def _response_is_success(self, response: Dict[str, Any]) -> bool:
+        if self.mode == "deploy_hook":
+            status = response.get("_http_status")
+            return isinstance(status, int) and 200 <= status < 300
+        return response.get("success") is True
+
+    def _success_signal(self, response: Dict[str, Any]) -> str:
+        if self.mode == "deploy_hook":
+            return "http_2xx" if self._response_is_success(response) else "missing_http_2xx"
+        return "success_true" if response.get("success") is True else "missing_success_true"
+
+    def _failure_reason(self, response: Dict[str, Any]) -> str:
+        if self.mode == "deploy_hook":
+            status = response.get("_http_status")
+            return f"deploy hook did not return HTTP 2xx status: {status}"
+        if "success" not in response:
+            return "deploy response missing explicit success=true"
+        return "deploy response did not include success=true"
 
 
 def default_cloudflare_sender(
@@ -307,6 +329,18 @@ class RemediationEngine:
                 }
             verification = self.diagnostics.run(incident)
             action_status = self._derive_step_status(action_result, verification)
+            verification_status = verification.get("outcome_status", "unknown")
+            action_result = {
+                **action_result,
+                "action_status": action_result.get(
+                    "action_status",
+                    "succeeded" if action_result.get("ok") else "failed",
+                ),
+            }
+            verification = {
+                **verification,
+                "verification_status": verification_status,
+            }
             if action_id is not None:
                 self._complete_step_attempt(
                     action_id=action_id,
@@ -324,6 +358,8 @@ class RemediationEngine:
                     "result": action_result,
                     "verification": verification,
                     "status": action_status,
+                    "action_status": action_result.get("action_status", "succeeded" if action_result.get("ok") else "failed"),
+                    "verification_status": verification_status,
                     "error": action_error,
                 }
             )

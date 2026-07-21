@@ -898,6 +898,22 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(len(self.cloudflare.calls), 1)
         self.assertEqual(self.deploy.calls, 1)
 
+    def test_remediation_records_action_and_verification_status_separately(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/redeploy-fail/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        attempts = body["incident"]["action_attempts"]
+        self.assertEqual(attempts[0]["result"]["action_status"], "succeeded")
+        self.assertEqual(attempts[0]["verification"]["verification_status"], "escalated")
+        self.assertEqual(attempts[0]["status"], "succeeded")
+
     def test_duplicate_event_is_ignored(self) -> None:
         payload = self.load_fixture("edge_down.json")
         first_status, first_body = self.app.handle_webhook(
@@ -1077,6 +1093,73 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(captured["payload"]["action"], "redeploy")
         self.assertEqual(captured["payload"]["incident"]["incident_id"], 42)
         self.assertEqual(result["http_status"], 202)
+        self.assertEqual(result["action_status"], "succeeded")
+        self.assertEqual(result["success_signal"], "success_true")
+
+    def test_real_deploy_client_requires_explicit_success_for_api_mode(self) -> None:
+        def fake_sender(method: str, url: str, headers: dict, payload: dict) -> dict:
+            return {
+                "result": {"deployment_id": "dep-ambiguous"},
+                "errors": [],
+                "messages": [],
+                "_http_status": 202,
+            }
+
+        client = RealDeployClient(
+            base_url="https://deploy.example.com/hooks/redeploy",
+            api_token="deploy-token",
+            mode="api",
+            sender=fake_sender,
+        )
+        incident = {
+            "incident_id": 43,
+            "external_incident_key": "incident-43",
+            "incident_type": "edge",
+            "normalized_severity": "sev1",
+            "betterstack": {
+                "monitor_url": "https://hcww.net/",
+                "monitor_name": "hcww homepage",
+            },
+        }
+
+        result = client.trigger_redeploy(incident)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action_status"], "failed")
+        self.assertEqual(result["success_signal"], "missing_success_true")
+        self.assertEqual(result["reason"], "deploy response missing explicit success=true")
+
+    def test_real_deploy_client_treats_explicit_failure_as_failed(self) -> None:
+        def fake_sender(method: str, url: str, headers: dict, payload: dict) -> dict:
+            return {
+                "success": False,
+                "errors": [{"message": "denied"}],
+                "messages": [],
+                "_http_status": 200,
+            }
+
+        client = RealDeployClient(
+            base_url="https://deploy.example.com/hooks/redeploy",
+            api_token="deploy-token",
+            mode="api",
+            sender=fake_sender,
+        )
+        incident = {
+            "incident_id": 44,
+            "external_incident_key": "incident-44",
+            "incident_type": "edge",
+            "normalized_severity": "sev1",
+            "betterstack": {
+                "monitor_url": "https://hcww.net/",
+                "monitor_name": "hcww homepage",
+            },
+        }
+
+        result = client.trigger_redeploy(incident)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action_status"], "failed")
+        self.assertEqual(result["reason"], "deploy response did not include success=true")
 
     def test_real_deploy_hook_client_omits_bearer_auth(self) -> None:
         captured = {}
@@ -1115,6 +1198,7 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertNotIn("Authorization", captured["headers"])
         self.assertEqual(result["deploy_mode"], "deploy_hook")
+        self.assertEqual(result["success_signal"], "http_2xx")
 
     def test_build_deploy_client_uses_real_client_with_credentials(self) -> None:
         settings = Settings(

@@ -266,7 +266,9 @@ Current behavior:
 - supports `deploy_hook` mode for Cloudflare Pages native deploy hooks
 - supports bearer-token mode for generic deployment APIs
 - sends a generic redeploy payload
-- treats any JSON response with `success: true` or no explicit failure as successful
+- treats generic API responses as successful only when they include `success: true`
+- treats deploy-hook responses as successful only when the hook returns HTTP 2xx
+- records action status and verification status separately before declaring recovery
 
 Recommended rollout:
 

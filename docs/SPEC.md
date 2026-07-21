@@ -51,6 +51,8 @@ Status: Complete.
 
 ## Step 6: Make Remediation Success Criteria Explicit
 
+Status: Complete.
+
 - Treat deploy responses as successful only when the configured deploy mode returns an explicit success signal.
 - Mark ambiguous deploy responses as failed or unknown, then rely on verification before declaring recovery.
 - Store remediation result status, HTTP status, and verification outcome separately for clearer audit history.
