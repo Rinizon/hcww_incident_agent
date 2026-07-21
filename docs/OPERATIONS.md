@@ -292,6 +292,49 @@ Agent update payload fields:
 7. Confirm cache purge and redeploy integrations are disabled until credentials are validated.
 8. Enable one mutating playbook at a time and run a supervised drill.
 
+## Reverse Proxy Expectations
+
+Run the Python service behind a production reverse proxy or ingress. The app
+should listen on a private interface such as `127.0.0.1` or a private container
+network, while the proxy owns public exposure.
+
+Required proxy behavior:
+
+- terminate TLS with a valid certificate and redirect HTTP to HTTPS
+- forward only `POST /webhooks/teams/betterstack` from the public internet
+- keep admin endpoints such as `/incidents`, `/incidents/:incident_id/audit`, and `/metrics` private or IP-restricted
+- preserve the request body unchanged and forward `Content-Type`, `Content-Length`, and `X-HCWW-Workflow-Secret`
+- enforce request body limits at or below `HCWW_MAX_WEBHOOK_BODY_BYTES`
+- set upstream connect/read/send timeouts no higher than the workflow retry window
+- write access logs with timestamp, method, path, status, latency, and source IP
+- avoid logging shared secret values, request bodies, or query strings containing sensitive data
+
+Example Nginx-style policy:
+
+```nginx
+client_max_body_size 64k;
+proxy_connect_timeout 5s;
+proxy_send_timeout 15s;
+proxy_read_timeout 30s;
+
+location = /webhooks/teams/betterstack {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+
+location ~ ^/(incidents|metrics) {
+    allow 203.0.113.10;
+    deny all;
+    proxy_pass http://127.0.0.1:8787;
+}
+```
+
+If the proxy supports source allowlists for Teams Workflows or Power Automate,
+enable them in staging first. Keep shared-secret authentication enabled even
+when source IP restrictions are present.
+
 ## Pre-Production Hardening Checklist
 
 Before enabling unattended production remediation:
@@ -303,6 +346,7 @@ Before enabling unattended production remediation:
 - Confirm `.dockerignore` excludes `.env`, `.git`, `data/`, caches, and local artifacts from image builds.
 - Confirm the container runs as the non-root `hcww` user and only `/app/data` needs persistent write access.
 - Confirm `HCWW_ALLOWED_PUBLIC_ORIGINS` contains only HCWW-owned public HTTPS origins.
+- Confirm the reverse proxy terminates TLS, enforces body/time limits, writes safe access logs, and restricts admin endpoints.
 - Confirm admin incident and audit endpoints return redacted payloads.
 - Run `python3 -m unittest discover -s tests`.
 - Run the diagnostics-only drill sequence: `self-recovery`, `dns-failure`, `contact-down`, and `duplicate-event`.
@@ -357,6 +401,46 @@ Recommended rollout:
 3. Leave `HCWW_DEPLOY_API_TOKEN` blank in deploy-hook mode.
 4. Keep `HCWW_ENABLE_REDEPLOY=false` until the hook is validated.
 5. Run a supervised synthetic redeploy test before enabling unattended use.
+
+## Secret Rotation
+
+Rotate secrets one integration at a time. During rotation, keep
+`HCWW_REMEDIATION_DISABLED=true` unless the change is only for the workflow or
+admin secret and diagnostics-only behavior has already been validated.
+
+Workflow secret rotation:
+
+1. Generate a new random `TEAMS_WORKFLOW_SHARED_SECRET`.
+2. Update the service environment and restart or redeploy the agent.
+3. Update the Teams workflow header value to match.
+4. Run `python3 tools/drill_agent.py --scenario self-recovery --workflow-secret "$TEAMS_WORKFLOW_SHARED_SECRET" --strict`.
+5. Remove the old secret from any password manager notes or workflow history where possible.
+
+Admin secret rotation:
+
+1. Generate a new random `HCWW_ADMIN_SHARED_SECRET`.
+2. Update the service environment and restart or redeploy the agent.
+3. Verify `GET /metrics` and `GET /incidents` with the new secret.
+4. Confirm the old secret receives `401` on an admin endpoint.
+5. Update operator runbooks or secret references that used the old value.
+
+Cloudflare credential rotation:
+
+1. Create a replacement token scoped only for cache purge on the HCWW zone.
+2. Update `CLOUDFLARE_API_TOKEN` and confirm `CLOUDFLARE_ZONE_ID` is unchanged.
+3. Keep `HCWW_ENABLE_CACHE_PURGE=false` until a supervised cache-purge drill passes.
+4. Revoke the old Cloudflare token after validation.
+
+Deploy credential rotation:
+
+1. Create a replacement deploy hook or API token for the intended production target.
+2. Update `HCWW_DEPLOY_BASE_URL` and `HCWW_DEPLOY_API_TOKEN` as needed.
+3. Keep `HCWW_ENABLE_REDEPLOY=false` until a supervised redeploy drill passes.
+4. Revoke the old hook or token after validation.
+
+After any secret rotation, review structured logs for auth failures and confirm
+no secret value appears in logs, Teams payloads, audit responses, or dry-run
+output.
 
 ## Docker Deployment
 
@@ -445,6 +529,31 @@ Recent incidents and non-terminal incidents are preserved. Back up the SQLite
 data volume before the first production `--apply` run and after any retention
 policy change.
 
+## Backup And Restore Drill
+
+The SQLite database is the durable incident and audit record. Back up the whole
+data volume while the service is stopped, or use SQLite's online backup tooling
+if the runtime cannot be stopped.
+
+Backup checklist:
+
+1. Set `HCWW_REMEDIATION_DISABLED=true`.
+2. Stop the service or pause inbound webhook delivery.
+3. Copy `data/agent_state.db` to encrypted storage with a timestamped filename.
+4. Record the app version, commit SHA, `HCWW_RETENTION_DAYS`, and backup time.
+5. Restart the service and confirm `GET /healthz` returns `status=ok`.
+
+Restore drill checklist:
+
+1. Restore the backup into a staging data directory, not production.
+2. Start the agent against the restored database with mutating playbooks disabled.
+3. Confirm `GET /incidents` and `GET /incidents/:incident_id/audit` return redacted data.
+4. Run `python3 tools/retention.py --db-path <restored-db> --retention-days 90` in preview mode.
+5. Run a diagnostics-only drill and verify no unexpected action attempts are created.
+
+Run a restore drill after the first production deployment, after schema-affecting
+changes, and at least quarterly.
+
 ## Operational Guardrails
 
 The current implementation includes:
@@ -469,6 +578,7 @@ The current implementation includes:
 - Review redacted audit history for escalated incidents
 - Confirm the SQLite database file is retained and backed up appropriately for the environment
 - Run `python3 tools/retention.py` before applying scheduled cleanup
+- Run a restore drill after backup or retention policy changes
 - Check that Teams delivery is still functioning after any workflow or connector changes
 - Revalidate Cloudflare and deploy credentials after rotation
 

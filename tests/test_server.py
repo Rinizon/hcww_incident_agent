@@ -110,6 +110,22 @@ class PackagingHardeningTestCase(unittest.TestCase):
         self.assertIn("- .env", compose)
         self.assertIn("./data:/app/data", compose)
 
+    def test_operations_runbook_documents_production_runtime_patterns(self) -> None:
+        runbook = (self.project_root / "docs" / "OPERATIONS.md").read_text()
+
+        self.assertIn("## Reverse Proxy Expectations", runbook)
+        self.assertIn("terminate TLS", runbook)
+        self.assertIn("proxy_read_timeout", runbook)
+        self.assertIn("access logs", runbook)
+        self.assertIn("IP-restricted", runbook)
+        self.assertIn("## Secret Rotation", runbook)
+        self.assertIn("TEAMS_WORKFLOW_SHARED_SECRET", runbook)
+        self.assertIn("HCWW_ADMIN_SHARED_SECRET", runbook)
+        self.assertIn("CLOUDFLARE_API_TOKEN", runbook)
+        self.assertIn("HCWW_DEPLOY_BASE_URL", runbook)
+        self.assertIn("## Backup And Restore Drill", runbook)
+        self.assertIn("data/agent_state.db", runbook)
+
 
 class ApplicationTestCase(unittest.TestCase):
     def setUp(self) -> None:

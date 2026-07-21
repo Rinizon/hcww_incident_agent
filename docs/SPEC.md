@@ -60,6 +60,8 @@ Status: Complete.
 
 ## Step 7: Document Production Runtime Patterns
 
+Status: Complete.
+
 - Update `README.md` and `docs/OPERATIONS.md` with structured logs, metrics, kill switch, retention, and replay workflow.
 - Add examples for reverse proxy expectations: TLS termination, request timeouts, access logs, and optional source IP restrictions.
 - Add a secret rotation runbook for workflow, admin, Cloudflare, and deploy credentials.
