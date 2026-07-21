@@ -6,6 +6,8 @@ Move the HCWW incident agent from a hardened release candidate to an operator-fr
 
 ## Step 1: Add Structured JSON Logging
 
+Status: Complete.
+
 - Add a small logging helper that emits JSON records to stdout with timestamp, level, event name, incident ID when available, and redacted details.
 - Log webhook acceptance/rejection, duplicate suppression, diagnostic completion, remediation start/completion, escalation, and Teams update queuing.
 - Reuse the existing redaction helper before logging details that may include payload fragments, headers, URLs, or action results.

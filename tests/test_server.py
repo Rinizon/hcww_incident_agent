@@ -22,6 +22,7 @@ from app.remediation import (
 )
 from app.server import IncidentAgentApplication, create_http_handler
 from app.schema import PayloadValidationError, validation_example_payload
+from app.structured_logging import StructuredLogger
 from tools.drill_agent import SCENARIOS, evaluate_result, list_scenarios, load_payload, run_scenario
 
 
@@ -123,6 +124,8 @@ class ApplicationTestCase(unittest.TestCase):
             enable_redeploy=True,
         )
         self.notifier = TeamsNotifier(settings=self.settings)
+        self.log_stream = io.StringIO()
+        self.logger = StructuredLogger(stream=self.log_stream)
         self.cloudflare = FakeCloudflareClient()
         self.deploy = FakeDeployClient()
         self.fetch_calls = {}
@@ -142,6 +145,7 @@ class ApplicationTestCase(unittest.TestCase):
             diagnostics=self.diagnostics,
             notifier=self.notifier,
             remediation=self.remediation,
+            logger=self.logger,
         )
         self.remediation.store = self.app.store
 
@@ -171,6 +175,13 @@ class ApplicationTestCase(unittest.TestCase):
         if hostname == "dns-fail.hcww.net":
             raise RuntimeError("Name or service not known")
         return ["203.0.113.10"]
+
+    def log_records(self) -> list[dict]:
+        return [
+            json.loads(line)
+            for line in self.log_stream.getvalue().splitlines()
+            if line.strip()
+        ]
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -259,6 +270,67 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertIn("teams.update.acknowledged", event_types)
         self.assertIn("teams.update.diagnosis", event_types)
         self.assertIn("teams.update.resolved", event_types)
+
+    def test_structured_logs_capture_incident_lifecycle(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        records = self.log_records()
+        events = [record["event"] for record in records]
+        self.assertEqual(status_code, 202)
+        self.assertIn("webhook.accepted", events)
+        self.assertIn("incident.claimed", events)
+        self.assertIn("incident.diagnostics_completed", events)
+        self.assertIn("teams.update_queued", events)
+        self.assertIn("incident.resolved", events)
+        incident_records = [
+            record
+            for record in records
+            if record.get("incident_id") == body["incident"]["incident_id"]
+        ]
+        self.assertGreater(len(incident_records), 0)
+        for record in records:
+            self.assertIn("timestamp", record)
+            self.assertIn("level", record)
+            self.assertIn("details", record)
+
+    def test_structured_logs_redact_sensitive_details(self) -> None:
+        self.logger.info(
+            "test.redaction",
+            headers={"Authorization": "Bearer log-secret-token"},
+            api_token="another-log-secret",
+            target_url="https://deploy.example.com/hooks/redeploy",
+        )
+
+        serialized_logs = self.log_stream.getvalue()
+        self.assertNotIn("log-secret-token", serialized_logs)
+        self.assertNotIn("another-log-secret", serialized_logs)
+        self.assertNotIn("deploy.example.com", serialized_logs)
+        self.assertIn(REDACTED, serialized_logs)
+
+    def test_structured_logs_capture_http_rejection(self) -> None:
+        encoded = json.dumps(validation_example_payload()).encode("utf-8")
+
+        status, body = self.post_webhook_http(
+            self.app,
+            encoded,
+            {
+                "Content-Type": "text/plain",
+                "Content-Length": str(len(encoded)),
+                "X-HCWW-Workflow-Secret": "test-secret",
+            },
+        )
+
+        records = self.log_records()
+        self.assertEqual(status, 415)
+        self.assertIn("application/json", body["error"])
+        self.assertEqual(records[-1]["event"], "webhook.rejected")
+        self.assertEqual(records[-1]["level"], "warning")
+        self.assertEqual(records[-1]["details"]["reason"], "unsupported_content_type")
 
     def test_admin_incident_reads_require_shared_secret(self) -> None:
         with self.assertRaises(PermissionError):
@@ -408,7 +480,10 @@ class ApplicationTestCase(unittest.TestCase):
             workflow_shared_secret="test-secret",
             admin_shared_secret="",
         )
-        app = IncidentAgentApplication(settings=settings)
+        app = IncidentAgentApplication(
+            settings=settings,
+            logger=StructuredLogger(stream=io.StringIO()),
+        )
 
         with self.assertRaises(PermissionError):
             app.handle_admin_list_incidents(headers={"X-HCWW-Admin-Secret": "admin-secret"})
@@ -469,7 +544,10 @@ class ApplicationTestCase(unittest.TestCase):
             env="development",
             workflow_shared_secret="",
         )
-        app = IncidentAgentApplication(settings=settings)
+        app = IncidentAgentApplication(
+            settings=settings,
+            logger=StructuredLogger(stream=io.StringIO()),
+        )
 
         health = app.handle_health()
         schema = app.schema_document()
@@ -514,7 +592,10 @@ class ApplicationTestCase(unittest.TestCase):
             workflow_shared_secret="test-secret",
             max_webhook_body_bytes=8,
         )
-        app = IncidentAgentApplication(settings=settings)
+        app = IncidentAgentApplication(
+            settings=settings,
+            logger=StructuredLogger(stream=io.StringIO()),
+        )
         body = b'{"too":"large"}'
 
         status, response = self.post_webhook_http(
@@ -844,6 +925,7 @@ class ApplicationTestCase(unittest.TestCase):
             diagnostics=diagnostics,
             notifier=TeamsNotifier(settings=settings),
             remediation=remediation,
+            logger=StructuredLogger(stream=io.StringIO()),
         )
         remediation.store = app.store
         payload = self.load_fixture("edge_down.json")

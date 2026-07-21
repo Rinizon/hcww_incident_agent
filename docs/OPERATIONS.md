@@ -329,6 +329,21 @@ curl -s http://127.0.0.1:8787/schema/webhooks/teams/betterstack
 If the agent must be reachable from another machine on the LAN, publish port `8787`
 on all interfaces rather than only `127.0.0.1`.
 
+## Structured Logs
+
+The agent writes newline-delimited JSON logs to stdout. Each record includes:
+
+- `timestamp`
+- `level`
+- `event`
+- `incident_id` when available
+- redacted `details`
+
+Logged events include webhook acceptance/rejection, duplicate suppression,
+diagnostic completion, remediation start/completion, escalation, and queued
+Teams updates. Log details are passed through the shared redaction helper before
+emission.
+
 ## Operational Guardrails
 
 The current implementation includes:
@@ -340,6 +355,7 @@ The current implementation includes:
 - configurable route and contact-path diagnostics before mutation
 - persisted audit trail for notifier and lifecycle events
 - centralized redaction for raw payloads, secrets, sensitive headers, deploy/webhook URLs, and large body excerpts
+- structured JSON logs for incident lifecycle and request rejection events
 - playbook feature flags for risky actions
 
 ## Routine Operator Checks

@@ -37,6 +37,7 @@ Incoming Better Stack workflow payloads are now:
 - redacted at storage and admin response boundaries for secrets, sensitive URLs, headers, and large body excerpts
 - moved through lifecycle states including `diagnosing`, `resolved`, and `escalated`
 - checked with initial DNS and HTTP diagnostics
+- emits redacted structured JSON logs for webhook, diagnostic, remediation, escalation, and Teams update events
 - able to run configurable core route and contact-path smoke checks
 - restricts diagnostics, smoke checks, and redirect targets to allowed HCWW public origins
 - prepared for Teams updates through the notifier layer

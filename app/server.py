@@ -15,6 +15,7 @@ from app.redaction import redact_data
 from app.remediation import RemediationEngine
 from app.schema import PayloadValidationError, describe_webhook_schema, validate_webhook_payload
 from app.store import IncidentStore
+from app.structured_logging import StructuredLogger
 from app.url_policy import URLPolicyError, validate_public_url
 
 
@@ -25,11 +26,13 @@ class IncidentAgentApplication:
         diagnostics: Optional[DiagnosticEngine] = None,
         notifier: Optional[TeamsNotifier] = None,
         remediation: Optional[RemediationEngine] = None,
+        logger: Optional[StructuredLogger] = None,
     ) -> None:
         self.settings = settings or Settings()
         self.store = IncidentStore(self.settings.db_path)
         self.diagnostics = diagnostics or DiagnosticEngine(settings=self.settings)
         self.notifier = notifier or TeamsNotifier(settings=self.settings)
+        self.logger = logger or StructuredLogger()
         self.remediation = remediation or RemediationEngine(
             settings=self.settings,
             diagnostics=self.diagnostics,
@@ -51,15 +54,29 @@ class IncidentAgentApplication:
     def handle_webhook(
         self, headers: Dict[str, str], body: bytes
     ) -> tuple[int, Dict[str, Any]]:
-        self._validate_secret(headers)
+        try:
+            self._validate_secret(headers)
+        except PermissionError as exc:
+            self.logger.warning("webhook.rejected", reason="auth_failed", error=str(exc))
+            raise
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.logger.warning("webhook.rejected", reason="invalid_json")
             raise PayloadValidationError("Request body must be valid JSON") from exc
 
-        validated = validate_webhook_payload(payload)
-        self._validate_webhook_urls(validated)
+        try:
+            validated = validate_webhook_payload(payload)
+            self._validate_webhook_urls(validated)
+        except PayloadValidationError as exc:
+            self.logger.warning("webhook.rejected", reason="payload_validation_failed", error=str(exc))
+            raise
         if self._is_self_generated_event(validated):
+            self.logger.info(
+                "webhook.ignored",
+                reason="self_generated_agent_message",
+                external_incident_key=validated["external_incident_key"],
+            )
             return (
                 HTTPStatus.ACCEPTED,
                 {
@@ -69,8 +86,21 @@ class IncidentAgentApplication:
                 },
             )
         classification = classify_incident(validated)
+        self.logger.info(
+            "webhook.accepted",
+            external_incident_key=validated["external_incident_key"],
+            event_id=validated["event_id"],
+            classification=classification,
+        )
         claim = self.store.claim_incident_event(validated, classification)
         if claim["outcome"] == "duplicate":
+            duplicate_incident = claim["incident"] or {}
+            self.logger.info(
+                "incident.duplicate_ignored",
+                incident_id=duplicate_incident.get("incident_id"),
+                external_incident_key=validated["external_incident_key"],
+                event_id=validated["event_id"],
+            )
             return (
                 HTTPStatus.ACCEPTED,
                 {
@@ -82,6 +112,12 @@ class IncidentAgentApplication:
             )
 
         incident = claim["incident"]
+        self.logger.info(
+            "incident.claimed",
+            incident_id=incident["incident_id"],
+            outcome=claim["outcome"],
+            current_status=incident["current_status"],
+        )
         incident = self._process_incident(incident)
         return (
             HTTPStatus.ACCEPTED,
@@ -272,6 +308,13 @@ class IncidentAgentApplication:
             summary="Queued Teams acknowledgement update",
             details=acknowledged,
         )
+        self.logger.info(
+            "teams.update_queued",
+            incident_id=incident["incident_id"],
+            phase="acknowledged",
+            mode=acknowledged["mode"],
+            posted=acknowledged["posted"],
+        )
 
         if incident["current_status"] != "resolved":
             incident = self.store.transition_incident_status(
@@ -282,6 +325,13 @@ class IncidentAgentApplication:
             )
 
         diagnostic_results = self.diagnostics.run(incident)
+        self.logger.info(
+            "incident.diagnostics_completed",
+            incident_id=incident["incident_id"],
+            outcome_status=diagnostic_results["outcome_status"],
+            outcome_reason=diagnostic_results["outcome_reason"],
+            target_url=diagnostic_results["target_url"],
+        )
         self.store.add_audit_event(
             incident_id=incident["incident_id"],
             event_type="incident.diagnostics_completed",
@@ -300,6 +350,13 @@ class IncidentAgentApplication:
             event_type="teams.update.diagnosis",
             summary="Queued Teams diagnosis update",
             details=diagnosis_update,
+        )
+        self.logger.info(
+            "teams.update_queued",
+            incident_id=incident["incident_id"],
+            phase="diagnosis",
+            mode=diagnosis_update["mode"],
+            posted=diagnosis_update["posted"],
         )
 
         if diagnostic_results["outcome_status"] != "resolved":
@@ -326,8 +383,26 @@ class IncidentAgentApplication:
                     summary="Queued Teams cooldown escalation update",
                     details=cooldown_update,
                 )
+                self.logger.warning(
+                    "incident.escalated",
+                    incident_id=incident["incident_id"],
+                    reason="remediation_cooldown",
+                    cooldown_seconds=self.settings.remediation_cooldown_seconds,
+                )
+                self.logger.info(
+                    "teams.update_queued",
+                    incident_id=incident["incident_id"],
+                    phase="escalated",
+                    mode=cooldown_update["mode"],
+                    posted=cooldown_update["posted"],
+                )
                 return incident
 
+            self.logger.info(
+                "remediation.started",
+                incident_id=incident["incident_id"],
+                incident_type=incident["incident_type"],
+            )
             incident = self.store.transition_incident_status(
                 incident_id=incident["incident_id"],
                 new_status="remediating",
@@ -346,8 +421,23 @@ class IncidentAgentApplication:
                 summary="Queued Teams remediation start update",
                 details=remediation_start_update,
             )
+            self.logger.info(
+                "teams.update_queued",
+                incident_id=incident["incident_id"],
+                phase="remediation_started",
+                mode=remediation_start_update["mode"],
+                posted=remediation_start_update["posted"],
+            )
 
             remediation_result = self.remediation.execute(incident, diagnostic_results)
+            self.logger.info(
+                "remediation.completed",
+                incident_id=incident["incident_id"],
+                attempted=remediation_result["attempted"],
+                resolved=remediation_result["resolved"],
+                reason=remediation_result["reason"],
+                step_count=len(remediation_result["steps"]),
+            )
             for step in remediation_result["steps"]:
                 self.store.add_audit_event(
                     incident_id=incident["incident_id"],
@@ -374,6 +464,13 @@ class IncidentAgentApplication:
                 summary="Queued Teams verifying update",
                 details=verification_update,
             )
+            self.logger.info(
+                "teams.update_queued",
+                incident_id=incident["incident_id"],
+                phase="verifying",
+                mode=verification_update["mode"],
+                posted=verification_update["posted"],
+            )
             diagnostic_results = remediation_result["final_verification"]
             final_result_details = dict(diagnostic_results)
             final_result_details["remediation"] = {
@@ -394,6 +491,13 @@ class IncidentAgentApplication:
                 event_type="teams.update.remediation_completed",
                 summary="Queued Teams remediation completed update",
                 details=remediation_complete_update,
+            )
+            self.logger.info(
+                "teams.update_queued",
+                incident_id=incident["incident_id"],
+                phase="remediation_completed",
+                mode=remediation_complete_update["mode"],
+                posted=remediation_complete_update["posted"],
             )
 
         else:
@@ -419,6 +523,19 @@ class IncidentAgentApplication:
             event_type=f"teams.update.{final_status}",
             summary=f"Queued Teams {final_status} update",
             details=final_update,
+        )
+        log_level = self.logger.info if final_status == "resolved" else self.logger.warning
+        log_level(
+            f"incident.{final_status}",
+            incident_id=incident["incident_id"],
+            outcome_reason=diagnostic_results["outcome_reason"],
+        )
+        self.logger.info(
+            "teams.update_queued",
+            incident_id=incident["incident_id"],
+            phase=final_status,
+            mode=final_update["mode"],
+            posted=final_update["posted"],
         )
         return incident
 
@@ -484,6 +601,11 @@ def create_http_handler(app: IncidentAgentApplication):
 
             content_type = self.headers.get("Content-Type", "")
             if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                app.logger.warning(
+                    "webhook.rejected",
+                    reason="unsupported_content_type",
+                    content_type=content_type,
+                )
                 self._send_json(
                     HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
                     {"error": "Content-Type must be application/json"},
@@ -492,6 +614,7 @@ def create_http_handler(app: IncidentAgentApplication):
 
             raw_content_length = self.headers.get("Content-Length")
             if raw_content_length is None:
+                app.logger.warning("webhook.rejected", reason="missing_content_length")
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
                     {"error": "Missing Content-Length header"},
@@ -500,18 +623,34 @@ def create_http_handler(app: IncidentAgentApplication):
             try:
                 content_length = int(raw_content_length)
             except ValueError:
+                app.logger.warning(
+                    "webhook.rejected",
+                    reason="invalid_content_length",
+                    content_length=raw_content_length,
+                )
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
                     {"error": "Invalid Content-Length header"},
                 )
                 return
             if content_length < 0:
+                app.logger.warning(
+                    "webhook.rejected",
+                    reason="invalid_content_length",
+                    content_length=raw_content_length,
+                )
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
                     {"error": "Invalid Content-Length header"},
                 )
                 return
             if content_length > app.settings.max_webhook_body_bytes:
+                app.logger.warning(
+                    "webhook.rejected",
+                    reason="body_too_large",
+                    content_length=content_length,
+                    max_bytes=app.settings.max_webhook_body_bytes,
+                )
                 self._send_json(
                     HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                     {
