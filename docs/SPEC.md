@@ -1,75 +1,61 @@
-# Security Hardening Implementation Spec
+# Production Readiness Implementation Spec
 
 ## Goal
 
-Harden the HCWW incident agent before internet-facing or unattended production use. The work focuses on failing closed, limiting trusted inputs, reducing secret exposure, and improving operational safety around remediation and audit data.
+Move the HCWW incident agent from a hardened release candidate to an operator-friendly production service. The work focuses on observability, operational control, retention, staging drills, and clearer escalation behavior that can be implemented in this repository.
 
-## Step 1: Fail Closed on Webhook Authentication
+## Step 1: Add Structured JSON Logging
 
-Status: Complete.
+- Add a small logging helper that emits JSON records to stdout with timestamp, level, event name, incident ID when available, and redacted details.
+- Log webhook acceptance/rejection, duplicate suppression, diagnostic completion, remediation start/completion, escalation, and Teams update queuing.
+- Reuse the existing redaction helper before logging details that may include payload fragments, headers, URLs, or action results.
+- Add tests for log shape and redaction of sensitive fields.
 
-- Align the documented and loaded environment variables so the service reads the same workflow secret name that operators configure.
-- Require `TEAMS_WORKFLOW_SHARED_SECRET` in staging and production; startup should fail when it is missing.
-- Keep local development convenient only when `HCWW_AGENT_ENV=development`, and make the unauthenticated mode explicit in health/schema output.
-- Add regression tests for missing, wrong, and correctly configured workflow secrets.
+## Step 2: Add Runtime Metrics and a Metrics Endpoint
 
-## Step 2: Add Strict URL Allowlisting and SSRF Protection
+- Track in-memory counters for incident intake, duplicate events, auth failures, request-policy rejects, URL-policy rejects, diagnostics outcomes, remediation attempts, remediation successes/failures, and escalations.
+- Add `GET /metrics` as an admin-secret-protected JSON endpoint.
+- Include a compact metrics summary in `/healthz` without exposing sensitive incident data.
+- Add tests proving counters increment on success, duplicate, rejection, remediation, and escalation paths.
 
-Status: Complete.
+## Step 3: Add a Global Remediation Kill Switch
 
-- Validate `betterstack.monitor_url`, `HCWW_SMOKE_CHECK_URL`, and `HCWW_CORE_SMOKE_URLS` before any DNS, HTTP, cache purge, or redeploy use.
-- Allow only expected HCWW origins such as `https://hcww.net` and `https://www.hcww.net`.
-- Reject localhost, private IP ranges, link-local addresses, unsupported schemes, embedded credentials, and unexpected ports.
-- Re-check final redirect targets before reading response bodies or treating diagnostics as successful.
+- Add `HCWW_REMEDIATION_DISABLED`, defaulting to `false`.
+- When enabled, force all mutating playbooks off even if cache purge or redeploy flags are true.
+- Show kill-switch state in `/healthz` and schema output.
+- Add tests proving remediation is skipped, incidents escalate with a clear reason, and no action attempts are recorded when the switch is active.
 
-## Step 3: Limit Inbound Request Size and Shape
+## Step 4: Add Incident and Audit Retention Controls
 
-Status: Complete.
+- Add configurable retention settings for resolved/escalated incidents and audit rows, such as `HCWW_RETENTION_DAYS`.
+- Implement a store cleanup method that deletes old action attempts, audit events, and incidents in the correct order.
+- Add a safe CLI command or tool mode to preview and apply cleanup.
+- Add tests for retention cutoff behavior and preservation of recent incidents.
 
-- Enforce a maximum webhook body size suitable for Better Stack Teams workflow payloads.
-- Return `413 Payload Too Large` for oversized requests and `400 Bad Request` for invalid or missing `Content-Length`.
-- Require `Content-Type: application/json` on webhook requests.
-- Add tests for oversized bodies, invalid content length, missing content type, and valid payload acceptance.
+## Step 5: Improve Escalation Guidance
 
-## Step 4: Harden Docker Packaging and Runtime Defaults
+- Add incident-type-specific operator guidance for DNS, edge, availability, contact-path, deploy failure, third-party outage, and unknown incidents.
+- Include the recommended next step in Teams update payloads and audit details when an incident escalates.
+- Keep messages concise and redacted while still including the strongest diagnostic evidence.
+- Add tests for escalation guidance selection by incident type and failure mode.
 
-Status: Complete.
+## Step 6: Extend the Drill Harness for Replay and Staging
 
-- Ensure `.dockerignore` is committed and excludes `.env`, `.git`, `data/`, caches, OS files, and local artifacts.
-- Remove any ignore rule that prevents `.dockerignore` from being tracked.
-- Run the container as a non-root user with writable access only to the application data directory.
-- Keep credentials runtime-only through `env_file`, secrets management, or deployment platform environment variables.
+- Add a `--payload-file` option to replay a specific fixture or captured redacted payload.
+- Add a `--dry-run` or `--print-payload` mode to inspect the outbound request before posting.
+- Add stricter validation output for expected incident status, action count, duplicate handling, and required audit events.
+- Add tests for payload-file replay, dry-run behavior, and failure reporting.
 
-## Step 5: Centralize Redaction for Stored and Returned Data
+## Step 7: Document Production Runtime Patterns
 
-Status: Complete.
-
-- Create a shared redaction helper for incident details, audit events, action attempts, diagnostics, and notifier payloads.
-- Strip sensitive headers such as `Authorization`, cookies, webhook URLs, deploy URLs, API tokens, and raw payload fields that may contain secrets.
-- Limit body excerpts stored in SQLite and returned from admin endpoints to the minimum needed for troubleshooting.
-- Add tests proving admin incident and audit endpoints do not return raw payloads or sensitive outbound request details.
-
-## Step 6: Make Remediation Success Criteria Explicit
-
-Status: Complete.
-
-- Treat deploy responses as successful only when the configured deploy mode returns an explicit success signal.
-- Mark ambiguous deploy responses as failed or unknown, then rely on verification before declaring recovery.
-- Store remediation result status, HTTP status, and verification outcome separately for clearer audit history.
-- Add tests for successful deploy, explicit failure, ambiguous response, and post-action verification failure.
-
-## Step 7: Add Production Guardrails and Documentation
-
-Status: Complete.
-
-- Update `README.md` and `docs/OPERATIONS.md` with required production environment variables and fail-closed behavior.
-- Document the allowed URL origins and how to update them safely if HCWW adds monitored domains.
-- Add rollout guidance: diagnostics-only first, then one mutating playbook at a time after supervised drills.
-- Include a pre-production checklist covering auth, URL validation, Docker secret hygiene, tests, and audit redaction.
+- Update `README.md` and `docs/OPERATIONS.md` with structured logs, metrics, kill switch, retention, and replay workflow.
+- Add examples for reverse proxy expectations: TLS termination, request timeouts, access logs, and optional source IP restrictions.
+- Add a secret rotation runbook for workflow, admin, Cloudflare, and deploy credentials.
+- Add a backup/restore drill checklist for the SQLite data volume.
 
 ## Validation
 
 - Run `python3 -m unittest discover -s tests` after each implementation step.
-- Add focused tests with each hardening change instead of relying only on end-to-end fixtures.
-- Confirm local development still works with explicit development settings.
-- Confirm staging/production settings fail startup when required secrets or URL allowlists are invalid.
+- Keep each step independently committable and reversible.
+- Confirm `/healthz`, `/schema/webhooks/teams/betterstack`, and any new admin endpoints remain redacted.
+- Confirm mutating playbooks stay disabled unless explicitly enabled and not blocked by the kill switch.
