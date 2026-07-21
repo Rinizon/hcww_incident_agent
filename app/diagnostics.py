@@ -4,7 +4,8 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.error import HTTPError
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from app.config import Settings
@@ -17,13 +18,29 @@ ResolveFn = Callable[[str], List[str]]
 def default_fetch(url: str, timeout_seconds: float) -> Dict[str, Any]:
     start = time.monotonic()
     request = Request(url, headers={"User-Agent": "hcww-incident-agent/0.1"})
-    with urlopen(request, timeout=timeout_seconds) as response:
+    try:
+        response = urlopen(request, timeout=timeout_seconds)
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        latency_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "ok": False,
+            "status_code": exc.code,
+            "final_url": exc.geturl(),
+            "headers": dict(exc.headers.items()),
+            "body_excerpt": body[:2000],
+            "latency_ms": latency_ms,
+        }
+
+    with response:
         body = response.read().decode("utf-8", errors="replace")
         latency_ms = int((time.monotonic() - start) * 1000)
         return {
             "ok": 200 <= response.status < 400,
             "status_code": response.status,
-            "body_excerpt": body[:500],
+            "final_url": response.geturl(),
+            "headers": dict(response.headers.items()),
+            "body_excerpt": body[:2000],
             "latency_ms": latency_ms,
         }
 
@@ -50,21 +67,40 @@ class DiagnosticEngine:
         expected_text = self.settings.smoke_check_expected_text
         parsed = urlparse(target_url)
         hostname = parsed.hostname or ""
+        check_urls = self._build_check_urls(target_url)
 
         dns_result = self._run_dns_check(hostname)
         http_result = self._run_http_check(target_url, expected_text)
+        http_checks = [
+            {
+                "url": url,
+                "result": http_result if url == target_url else self._run_http_check(url, expected_text),
+            }
+            for url in check_urls
+        ]
+        contact = self._run_contact_checks(monitor_url) if incident["incident_type"] == "contact_path" else None
 
-        summary = self._build_summary(target_url, dns_result, http_result)
-        outcome = self._derive_outcome(incident, dns_result, http_result)
+        summary = self._build_summary(target_url, dns_result, http_result, http_checks, contact)
+        outcome = self._derive_outcome(incident, dns_result, http_result, http_checks, contact)
         return {
             "target_url": target_url,
             "hostname": hostname,
             "dns": dns_result,
             "http": http_result,
+            "http_checks": http_checks,
+            "contact": contact,
             "summary": summary,
             "outcome_status": outcome["status"],
             "outcome_reason": outcome["reason"],
         }
+
+    def _build_check_urls(self, target_url: str) -> List[str]:
+        urls = [target_url]
+        for raw in self.settings.core_smoke_urls.split(","):
+            url = raw.strip()
+            if url and url not in urls:
+                urls.append(url)
+        return urls
 
     def _run_dns_check(self, hostname: str) -> Dict[str, Any]:
         if not hostname:
@@ -90,18 +126,75 @@ class DiagnosticEngine:
         result["expected_text_present"] = expected_text_present
         return result
 
+    def _run_contact_checks(self, monitor_url: str) -> Dict[str, Any]:
+        base_url = self._origin_for_url(monitor_url)
+        contact_url = urljoin(base_url, "/contact/")
+        thanks_url = urljoin(base_url, "/contact/thanks/")
+        expected_action = self.settings.contact_form_expected_action
+        contact_result = self._run_http_check(contact_url, self.settings.smoke_check_expected_text)
+        thanks_result = self._run_http_check(thanks_url, self.settings.smoke_check_expected_text)
+        body_excerpt = contact_result.get("body_excerpt", "")
+        form_action_present = None
+        if expected_action:
+            form_action_present = expected_action in body_excerpt
+
+        ok = bool(contact_result.get("ok")) and bool(thanks_result.get("ok"))
+        if form_action_present is not None:
+            ok = ok and form_action_present
+
+        return {
+            "ok": ok,
+            "contact_url": contact_url,
+            "thanks_url": thanks_url,
+            "contact_page": contact_result,
+            "thanks_page": thanks_result,
+            "expected_form_action": expected_action or None,
+            "form_action_present": form_action_present,
+        }
+
+    def _origin_for_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return "https://hcww.net"
+        return f"{parsed.scheme}://{parsed.netloc}"
+
     def _build_summary(
-        self, target_url: str, dns_result: Dict[str, Any], http_result: Dict[str, Any]
+        self,
+        target_url: str,
+        dns_result: Dict[str, Any],
+        http_result: Dict[str, Any],
+        http_checks: List[Dict[str, Any]],
+        contact: Optional[Dict[str, Any]],
     ) -> str:
         dns_state = "ok" if dns_result.get("ok") else "failed"
         http_state = "ok" if http_result.get("ok") else "failed"
-        return f"Diagnostics for {target_url}: dns={dns_state}, http={http_state}"
+        failed_route_count = sum(1 for check in http_checks if not check["result"].get("ok"))
+        contact_state = ""
+        if contact is not None:
+            contact_state = f", contact={'ok' if contact.get('ok') else 'failed'}"
+        return (
+            f"Diagnostics for {target_url}: dns={dns_state}, http={http_state}, "
+            f"failed_routes={failed_route_count}{contact_state}"
+        )
 
     def _derive_outcome(
-        self, incident: Dict[str, Any], dns_result: Dict[str, Any], http_result: Dict[str, Any]
+        self,
+        incident: Dict[str, Any],
+        dns_result: Dict[str, Any],
+        http_result: Dict[str, Any],
+        http_checks: List[Dict[str, Any]],
+        contact: Optional[Dict[str, Any]],
     ) -> Dict[str, str]:
         if incident["incident_type"] == "recovery":
             return {"status": "resolved", "reason": "Recovery event from Better Stack"}
-        if dns_result.get("ok") and http_result.get("ok"):
+        all_http_ok = all(check["result"].get("ok") for check in http_checks)
+        contact_ok = contact is None or bool(contact.get("ok"))
+        if dns_result.get("ok") and http_result.get("ok") and all_http_ok and contact_ok:
             return {"status": "resolved", "reason": "Public checks passed"}
+        if not dns_result.get("ok"):
+            return {"status": "escalated", "reason": "DNS checks failed"}
+        if not all_http_ok:
+            return {"status": "escalated", "reason": "One or more public route checks failed"}
+        if not contact_ok:
+            return {"status": "escalated", "reason": "Contact-path checks failed"}
         return {"status": "escalated", "reason": "Diagnostics found unresolved public failure"}

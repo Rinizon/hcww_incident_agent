@@ -70,6 +70,13 @@ Deploy-specific settings:
 - `HCWW_DEPLOY_BASE_URL`
 - `HCWW_DEPLOY_API_TOKEN`
 
+Diagnostic-specific settings:
+
+- `HCWW_SMOKE_CHECK_URL`
+- `HCWW_CORE_SMOKE_URLS`
+- `HCWW_SMOKE_CHECK_EXPECTED_TEXT`
+- `HCWW_CONTACT_FORM_EXPECTED_ACTION`
+
 Recommended production starting values:
 
 - `HCWW_MAX_REMEDIATION_ATTEMPTS=2`
@@ -233,6 +240,7 @@ The current implementation includes:
 - per-playbook retry limits
 - cooldown-based remediation loop protection
 - persisted action attempts with `started`, `failed`, `succeeded`, and `verified` statuses
+- configurable route and contact-path diagnostics before mutation
 - persisted audit trail for notifier and lifecycle events
 - playbook feature flags for risky actions
 

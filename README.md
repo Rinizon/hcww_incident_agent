@@ -33,6 +33,7 @@ Incoming Better Stack workflow payloads are now:
 - stored in SQLite with triage audit events
 - moved through lifecycle states including `diagnosing`, `resolved`, and `escalated`
 - checked with initial DNS and HTTP diagnostics
+- able to run configurable core route and contact-path smoke checks
 - prepared for Teams updates through the notifier layer
 - able to attempt cache purge and redeploy playbooks with verification after each action
 - tracked with persisted remediation action attempts and retry-limited playbook execution

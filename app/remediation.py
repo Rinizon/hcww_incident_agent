@@ -233,6 +233,15 @@ class RemediationEngine:
     def plan(self, incident: Dict[str, Any], diagnostics_result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if diagnostics_result["outcome_status"] == "resolved":
             return []
+        if not diagnostics_result.get("dns", {}).get("ok"):
+            return []
+        contact_result = diagnostics_result.get("contact")
+        if (
+            incident["incident_type"] == "contact_path"
+            and contact_result is not None
+            and contact_result.get("form_action_present") is False
+        ):
+            return []
 
         incident_type = incident["incident_type"]
         route = incident["betterstack"]["monitor_url"]

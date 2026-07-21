@@ -121,9 +121,13 @@ class ApplicationTestCase(unittest.TestCase):
             raise RuntimeError("HTTP 523 origin is unreachable")
         if "redeploy-fail" in url:
             raise RuntimeError("Origin still unavailable")
+        if "route-fail" in url:
+            raise RuntimeError("Required route unavailable")
         return {
             "ok": True,
             "status_code": 200,
+            "final_url": url,
+            "headers": {"content-type": "text/html"},
             "body_excerpt": "Hill Country Web Works homepage",
             "latency_ms": 42,
         }
@@ -348,6 +352,76 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(classification["incident_type"], "recovery")
         self.assertEqual(classification["normalized_severity"], "sev4")
         self.assertEqual(classification["current_status"], "resolved")
+
+    def test_diagnostics_escalate_when_configured_core_route_fails(self) -> None:
+        settings = Settings(
+            db_path=os.path.join(self.temp_dir.name, "route_checks.db"),
+            smoke_check_expected_text="Hill Country Web Works",
+            core_smoke_urls="https://hcww.net/services/, https://route-fail.hcww.net/pricing/",
+        )
+        diagnostics = DiagnosticEngine(
+            settings=settings,
+            fetch=self.fake_fetch,
+            resolve=self.fake_resolve,
+        )
+        incident = {
+            "incident_type": "availability",
+            "betterstack": {"monitor_url": "https://hcww.net/"},
+        }
+
+        result = diagnostics.run(incident)
+
+        self.assertEqual(result["outcome_status"], "escalated")
+        self.assertEqual(result["outcome_reason"], "One or more public route checks failed")
+        self.assertEqual(len(result["http_checks"]), 3)
+        self.assertEqual(result["http"]["headers"]["content-type"], "text/html")
+        failed = [check for check in result["http_checks"] if not check["result"].get("ok")]
+        self.assertEqual(failed[0]["url"], "https://route-fail.hcww.net/pricing/")
+
+    def test_contact_diagnostics_validate_expected_form_action(self) -> None:
+        def contact_fetch(url: str, timeout_seconds: float) -> dict:
+            body = "Hill Country Web Works contact page"
+            if url.endswith("/contact/"):
+                body += '<form action="https://wrong.example/submit"></form>'
+            return {
+                "ok": True,
+                "status_code": 200,
+                "final_url": url,
+                "headers": {"content-type": "text/html"},
+                "body_excerpt": body,
+                "latency_ms": 10,
+            }
+
+        settings = Settings(
+            db_path=os.path.join(self.temp_dir.name, "contact_checks.db"),
+            smoke_check_expected_text="Hill Country Web Works",
+            contact_form_expected_action="https://forms.example/submit",
+            enable_cache_purge=True,
+        )
+        diagnostics = DiagnosticEngine(
+            settings=settings,
+            fetch=contact_fetch,
+            resolve=self.fake_resolve,
+        )
+        remediation = RemediationEngine(
+            settings=settings,
+            diagnostics=diagnostics,
+            cloudflare=self.cloudflare,
+            deploy=self.deploy,
+        )
+        incident = {
+            "incident_id": 1,
+            "incident_type": "contact_path",
+            "betterstack": {"monitor_url": "https://hcww.net/contact/"},
+        }
+
+        result = diagnostics.run(incident)
+
+        self.assertEqual(result["outcome_status"], "escalated")
+        self.assertEqual(result["outcome_reason"], "Contact-path checks failed")
+        self.assertFalse(result["contact"]["ok"])
+        self.assertFalse(result["contact"]["form_action_present"])
+        self.assertEqual(remediation.plan(incident, result), [])
 
     def test_webhook_escalates_when_public_checks_fail(self) -> None:
         payload = self.load_fixture("edge_down.json")
