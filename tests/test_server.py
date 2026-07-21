@@ -207,6 +207,26 @@ class ApplicationTestCase(unittest.TestCase):
         handler_class.do_POST(handler)
         return int(captured["status"]), captured["payload"]
 
+    def get_http(
+        self,
+        app: IncidentAgentApplication,
+        path: str,
+        headers: dict,
+    ) -> tuple[int, dict]:
+        handler_class = create_http_handler(app)
+        handler = handler_class.__new__(handler_class)
+        handler.path = path
+        handler.headers = headers
+        captured = {}
+
+        def capture_json(status_code: int, payload: dict) -> None:
+            captured["status"] = status_code
+            captured["payload"] = payload
+
+        handler._send_json = capture_json
+        handler_class.do_GET(handler)
+        return int(captured["status"]), captured["payload"]
+
     def test_health_endpoint_logic(self) -> None:
         body = self.app.handle_health()
 
@@ -215,6 +235,7 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(body["remediation"]["mode"], "mutating")
         self.assertTrue(body["remediation"]["playbooks"]["cloudflare_cache_purge"])
         self.assertTrue(body["remediation"]["playbooks"]["known_good_redeploy"])
+        self.assertEqual(body["metrics"]["webhooks_accepted"], 0)
 
     def test_default_settings_start_in_diagnostics_only_mode(self) -> None:
         original_cache_purge = os.environ.pop("HCWW_ENABLE_CACHE_PURGE", None)
@@ -331,6 +352,10 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(records[-1]["event"], "webhook.rejected")
         self.assertEqual(records[-1]["level"], "warning")
         self.assertEqual(records[-1]["details"]["reason"], "unsupported_content_type")
+        self.assertEqual(
+            self.app.metrics.snapshot()["webhook.rejected.request_policy"],
+            1,
+        )
 
     def test_admin_incident_reads_require_shared_secret(self) -> None:
         with self.assertRaises(PermissionError):
@@ -338,6 +363,28 @@ class ApplicationTestCase(unittest.TestCase):
 
         with self.assertRaises(PermissionError):
             self.app.handle_admin_list_incidents(headers={"X-HCWW-Admin-Secret": "wrong-secret"})
+
+    def test_admin_metrics_requires_shared_secret(self) -> None:
+        with self.assertRaises(PermissionError):
+            self.app.handle_admin_metrics(headers={})
+
+    def test_metrics_endpoint_requires_admin_secret(self) -> None:
+        status, body = self.get_http(self.app, "/metrics", headers={})
+
+        self.assertEqual(status, 401)
+        self.assertIn("error", body)
+
+    def test_metrics_endpoint_returns_counter_snapshot(self) -> None:
+        self.app.metrics.increment("test.counter")
+
+        status, body = self.get_http(
+            self.app,
+            "/metrics",
+            headers={"X-HCWW-Admin-Secret": "admin-secret"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["metrics"]["test.counter"], 1)
 
     def test_admin_secret_header_is_case_insensitive(self) -> None:
         body = self.app.handle_admin_list_incidents(
@@ -496,6 +543,7 @@ class ApplicationTestCase(unittest.TestCase):
                 headers={},
                 body=json.dumps(payload).encode("utf-8"),
             )
+        self.assertEqual(self.app.metrics.snapshot()["webhook.rejected.auth"], 1)
 
     def test_webhook_rejects_wrong_shared_secret_when_configured(self) -> None:
         payload = validation_example_payload()
@@ -611,6 +659,10 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(status, 413)
         self.assertEqual(response["max_bytes"], 8)
         self.assertEqual(app.list_incidents()["incidents"], [])
+        self.assertEqual(
+            app.metrics.snapshot()["webhook.rejected.request_policy"],
+            1,
+        )
 
     def test_http_webhook_rejects_invalid_content_length(self) -> None:
         status, body = self.post_webhook_http(
@@ -667,6 +719,10 @@ class ApplicationTestCase(unittest.TestCase):
 
         self.assertEqual(self.app.list_incidents()["incidents"], [])
         self.assertEqual(self.fetch_calls, {})
+        self.assertEqual(
+            self.app.metrics.snapshot()["webhook.rejected.url_policy"],
+            1,
+        )
 
     def test_settings_reject_private_smoke_check_url(self) -> None:
         with self.assertRaises(ValueError):
@@ -873,6 +929,11 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(body["incident"]["action_attempts"][0]["status"], "verified")
         self.assertEqual(len(self.cloudflare.calls), 1)
         self.assertEqual(self.deploy.calls, 0)
+        metrics = self.app.metrics.snapshot()
+        self.assertEqual(metrics["webhook.accepted"], 1)
+        self.assertEqual(metrics["diagnostics.escalated"], 1)
+        self.assertEqual(metrics["remediation.attempted"], 1)
+        self.assertEqual(metrics["remediation.succeeded"], 1)
 
     def test_remediation_attempt_is_started_before_external_mutation(self) -> None:
         payload = self.load_fixture("edge_down.json")
@@ -961,6 +1022,9 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(status_code, 202)
         self.assertEqual(body["incident"]["current_status"], "escalated")
         self.assertEqual(len(body["incident"]["action_attempts"]), 0)
+        metrics = self.app.metrics.snapshot()
+        self.assertEqual(metrics["diagnostics.escalated"], 1)
+        self.assertEqual(metrics["incident.escalated"], 1)
 
     def test_webhook_redeploys_when_cache_purge_does_not_recover(self) -> None:
         payload = self.load_fixture("edge_down.json")
@@ -1028,6 +1092,11 @@ class ApplicationTestCase(unittest.TestCase):
         ]
         self.assertEqual(len(duplicate_events), 1)
         self.assertEqual(len(diagnostics_events), 1)
+        metrics = self.app.handle_admin_metrics(
+            headers={"X-HCWW-Admin-Secret": "admin-secret"}
+        )["metrics"]
+        self.assertEqual(metrics["webhook.accepted"], 2)
+        self.assertEqual(metrics["incident.duplicate"], 1)
 
     def test_concurrent_duplicate_event_is_processed_once(self) -> None:
         payload = self.load_fixture("edge_down.json")

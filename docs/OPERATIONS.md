@@ -143,6 +143,8 @@ It includes a `request_policy` block showing the webhook body-size limit,
 required content type, and `Content-Length` requirement.
 It also includes a `url_policy` block showing the currently allowed public
 origins and redirect-target validation status.
+The response also includes a compact `metrics` summary with aggregate intake,
+rejection, duplicate, diagnostics, remediation, and escalation counts.
 
 Inspect the webhook schema:
 
@@ -196,6 +198,12 @@ Headers:
 Incident read endpoints require:
 
 - `X-HCWW-Admin-Secret: <admin shared secret>`
+
+Admin metrics endpoint:
+
+- `GET /metrics`
+- requires `X-HCWW-Admin-Secret`
+- returns a JSON snapshot of in-memory runtime counters
 
 Payload requirements:
 
@@ -344,6 +352,23 @@ diagnostic completion, remediation start/completion, escalation, and queued
 Teams updates. Log details are passed through the shared redaction helper before
 emission.
 
+## Runtime Metrics
+
+The agent keeps in-memory counters for the current process lifetime. Use
+`GET /metrics` with the admin shared secret for the full counter snapshot, and
+`GET /healthz` for a compact summary.
+
+Tracked counters cover:
+
+- accepted webhook payloads and duplicate event suppression
+- auth, request-policy, payload-validation, and URL-policy rejections
+- diagnostic outcomes
+- remediation attempts, successes, and failures
+- incident escalations
+
+These counters are intentionally process-local. Treat them as lightweight
+operational visibility, not a durable audit source.
+
 ## Operational Guardrails
 
 The current implementation includes:
@@ -356,11 +381,13 @@ The current implementation includes:
 - persisted audit trail for notifier and lifecycle events
 - centralized redaction for raw payloads, secrets, sensitive headers, deploy/webhook URLs, and large body excerpts
 - structured JSON logs for incident lifecycle and request rejection events
+- admin-secret-protected runtime metrics and health-summary counters
 - playbook feature flags for risky actions
 
 ## Routine Operator Checks
 
 - Review recent incidents via `GET /incidents`
+- Review current process counters via `GET /metrics`
 - Review redacted audit history for escalated incidents
 - Confirm the SQLite database file is retained and backed up appropriately for the environment
 - Check that Teams delivery is still functioning after any workflow or connector changes

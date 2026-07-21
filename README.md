@@ -21,6 +21,7 @@ The agent is implemented as a zero-dependency Python service with SQLite persist
 ### Available endpoints
 
 - `GET /healthz`
+- `GET /metrics`
 - `GET /schema/webhooks/teams/betterstack`
 - `POST /webhooks/teams/betterstack`
 - `GET /incidents`
@@ -38,6 +39,7 @@ Incoming Better Stack workflow payloads are now:
 - moved through lifecycle states including `diagnosing`, `resolved`, and `escalated`
 - checked with initial DNS and HTTP diagnostics
 - emits redacted structured JSON logs for webhook, diagnostic, remediation, escalation, and Teams update events
+- exposes admin-secret-protected runtime metrics and a compact health summary
 - able to run configurable core route and contact-path smoke checks
 - restricts diagnostics, smoke checks, and redirect targets to allowed HCWW public origins
 - prepared for Teams updates through the notifier layer

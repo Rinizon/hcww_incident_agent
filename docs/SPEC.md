@@ -15,6 +15,8 @@ Status: Complete.
 
 ## Step 2: Add Runtime Metrics and a Metrics Endpoint
 
+Status: Complete.
+
 - Track in-memory counters for incident intake, duplicate events, auth failures, request-policy rejects, URL-policy rejects, diagnostics outcomes, remediation attempts, remediation successes/failures, and escalations.
 - Add `GET /metrics` as an admin-secret-protected JSON endpoint.
 - Include a compact metrics summary in `/healthz` without exposing sensitive incident data.

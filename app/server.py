@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
+from app.metrics import MetricsCollector
 from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
 from app.redaction import redact_data
 from app.remediation import RemediationEngine
@@ -27,12 +28,14 @@ class IncidentAgentApplication:
         notifier: Optional[TeamsNotifier] = None,
         remediation: Optional[RemediationEngine] = None,
         logger: Optional[StructuredLogger] = None,
+        metrics: Optional[MetricsCollector] = None,
     ) -> None:
         self.settings = settings or Settings()
         self.store = IncidentStore(self.settings.db_path)
         self.diagnostics = diagnostics or DiagnosticEngine(settings=self.settings)
         self.notifier = notifier or TeamsNotifier(settings=self.settings)
         self.logger = logger or StructuredLogger()
+        self.metrics = metrics or MetricsCollector()
         self.remediation = remediation or RemediationEngine(
             settings=self.settings,
             diagnostics=self.diagnostics,
@@ -49,6 +52,7 @@ class IncidentAgentApplication:
             "request_policy": self._request_policy_status(),
             "url_policy": self._url_policy_status(),
             "remediation": self._remediation_status(),
+            "metrics": self.metrics.summary(),
         }
 
     def handle_webhook(
@@ -57,11 +61,13 @@ class IncidentAgentApplication:
         try:
             self._validate_secret(headers)
         except PermissionError as exc:
+            self.metrics.increment("webhook.rejected.auth")
             self.logger.warning("webhook.rejected", reason="auth_failed", error=str(exc))
             raise
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.metrics.increment("webhook.rejected.invalid_json")
             self.logger.warning("webhook.rejected", reason="invalid_json")
             raise PayloadValidationError("Request body must be valid JSON") from exc
 
@@ -69,9 +75,14 @@ class IncidentAgentApplication:
             validated = validate_webhook_payload(payload)
             self._validate_webhook_urls(validated)
         except PayloadValidationError as exc:
+            if "payload.betterstack.monitor_url" in str(exc):
+                self.metrics.increment("webhook.rejected.url_policy")
+            else:
+                self.metrics.increment("webhook.rejected.payload_validation")
             self.logger.warning("webhook.rejected", reason="payload_validation_failed", error=str(exc))
             raise
         if self._is_self_generated_event(validated):
+            self.metrics.increment("webhook.ignored.self_generated")
             self.logger.info(
                 "webhook.ignored",
                 reason="self_generated_agent_message",
@@ -86,6 +97,7 @@ class IncidentAgentApplication:
                 },
             )
         classification = classify_incident(validated)
+        self.metrics.increment("webhook.accepted")
         self.logger.info(
             "webhook.accepted",
             external_incident_key=validated["external_incident_key"],
@@ -94,6 +106,7 @@ class IncidentAgentApplication:
         )
         claim = self.store.claim_incident_event(validated, classification)
         if claim["outcome"] == "duplicate":
+            self.metrics.increment("incident.duplicate")
             duplicate_incident = claim["incident"] or {}
             self.logger.info(
                 "incident.duplicate_ignored",
@@ -167,6 +180,10 @@ class IncidentAgentApplication:
                 for event in self.store.list_audit_events(incident_id)
             ]
         }
+
+    def handle_admin_metrics(self, headers: Dict[str, str]) -> Dict[str, Any]:
+        self._validate_admin_secret(headers)
+        return {"metrics": self.metrics.snapshot()}
 
     def schema_document(self) -> Dict[str, Any]:
         schema = describe_webhook_schema()
@@ -325,6 +342,7 @@ class IncidentAgentApplication:
             )
 
         diagnostic_results = self.diagnostics.run(incident)
+        self.metrics.increment(f"diagnostics.{diagnostic_results['outcome_status']}")
         self.logger.info(
             "incident.diagnostics_completed",
             incident_id=incident["incident_id"],
@@ -383,6 +401,7 @@ class IncidentAgentApplication:
                     summary="Queued Teams cooldown escalation update",
                     details=cooldown_update,
                 )
+                self.metrics.increment("incident.escalated")
                 self.logger.warning(
                     "incident.escalated",
                     incident_id=incident["incident_id"],
@@ -430,6 +449,12 @@ class IncidentAgentApplication:
             )
 
             remediation_result = self.remediation.execute(incident, diagnostic_results)
+            if remediation_result["attempted"]:
+                self.metrics.increment("remediation.attempted")
+                if remediation_result["resolved"]:
+                    self.metrics.increment("remediation.succeeded")
+                else:
+                    self.metrics.increment("remediation.failed")
             self.logger.info(
                 "remediation.completed",
                 incident_id=incident["incident_id"],
@@ -504,6 +529,8 @@ class IncidentAgentApplication:
             final_result_details = dict(diagnostic_results)
 
         final_status = diagnostic_results["outcome_status"]
+        if final_status == "escalated":
+            self.metrics.increment("incident.escalated")
         incident = self.store.transition_incident_status(
             incident_id=incident["incident_id"],
             new_status=final_status,
@@ -568,6 +595,12 @@ def create_http_handler(app: IncidentAgentApplication):
                         app.handle_admin_list_incidents(dict(self.headers)),
                     )
                     return
+                if path == "/metrics":
+                    self._send_json(
+                        HTTPStatus.OK,
+                        app.handle_admin_metrics(dict(self.headers)),
+                    )
+                    return
                 if path.startswith("/incidents/") and path.endswith("/audit"):
                     incident_id = self._parse_incident_id(path, suffix="/audit")
                     audit = app.handle_admin_get_incident_audit(
@@ -601,6 +634,7 @@ def create_http_handler(app: IncidentAgentApplication):
 
             content_type = self.headers.get("Content-Type", "")
             if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                app.metrics.increment("webhook.rejected.request_policy")
                 app.logger.warning(
                     "webhook.rejected",
                     reason="unsupported_content_type",
@@ -614,6 +648,7 @@ def create_http_handler(app: IncidentAgentApplication):
 
             raw_content_length = self.headers.get("Content-Length")
             if raw_content_length is None:
+                app.metrics.increment("webhook.rejected.request_policy")
                 app.logger.warning("webhook.rejected", reason="missing_content_length")
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -623,6 +658,7 @@ def create_http_handler(app: IncidentAgentApplication):
             try:
                 content_length = int(raw_content_length)
             except ValueError:
+                app.metrics.increment("webhook.rejected.request_policy")
                 app.logger.warning(
                     "webhook.rejected",
                     reason="invalid_content_length",
@@ -634,6 +670,7 @@ def create_http_handler(app: IncidentAgentApplication):
                 )
                 return
             if content_length < 0:
+                app.metrics.increment("webhook.rejected.request_policy")
                 app.logger.warning(
                     "webhook.rejected",
                     reason="invalid_content_length",
@@ -645,6 +682,7 @@ def create_http_handler(app: IncidentAgentApplication):
                 )
                 return
             if content_length > app.settings.max_webhook_body_bytes:
+                app.metrics.increment("webhook.rejected.request_policy")
                 app.logger.warning(
                     "webhook.rejected",
                     reason="body_too_large",
