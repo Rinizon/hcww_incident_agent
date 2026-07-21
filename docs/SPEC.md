@@ -33,6 +33,8 @@ Status: Complete.
 
 ## Step 4: Harden Docker Packaging and Runtime Defaults
 
+Status: Complete.
+
 - Ensure `.dockerignore` is committed and excludes `.env`, `.git`, `data/`, caches, OS files, and local artifacts.
 - Remove any ignore rule that prevents `.dockerignore` from being tracked.
 - Run the container as a non-root user with writable access only to the application data directory.

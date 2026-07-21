@@ -3,4 +3,3 @@ __pycache__/
 data/*.db
 .env
 .DS_Store
-.dockerignore

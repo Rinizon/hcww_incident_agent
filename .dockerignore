@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+data/
+*.db
+*.sqlite
+*.sqlite3
+.agents/
+.codex/

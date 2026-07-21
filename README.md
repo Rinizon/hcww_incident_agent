@@ -43,6 +43,7 @@ Incoming Better Stack workflow payloads are now:
 - tracked with persisted remediation action attempts and retry-limited playbook execution
 - protected by duplicate event suppression, cooldown-based loop prevention, and per-playbook retry limits
 - protected by fail-closed workflow webhook authentication outside explicit development mode
+- packaged with `.env` and local state excluded from Docker builds and runs as a non-root container user
 - starts in diagnostics-only mode unless mutating playbooks are explicitly enabled
 - backed by fixture-based end-to-end tests and an operations runbook in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md)
 - includes a real Cloudflare cache-purge client for production token and zone wiring

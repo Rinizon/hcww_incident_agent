@@ -287,7 +287,10 @@ Container-specific requirements:
 
 - set `HCWW_AGENT_HOST=0.0.0.0`
 - mount `/app/data` persistently
-- keep `.env` available at the project root
+- keep `.env` available at the project root for `docker compose` runtime injection
+- keep `.env`, `.git`, `data/`, caches, and local artifacts out of the image build context through `.dockerignore`
+- run the application as the non-root `hcww` user created by the image
+- ensure the host `./data` directory is writable by the container user before production deployment
 
 Recommended server-side validation:
 

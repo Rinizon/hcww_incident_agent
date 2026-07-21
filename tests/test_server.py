@@ -62,6 +62,39 @@ class RaisingCloudflareClient(CloudflareClient):
         raise RuntimeError("Cloudflare API unavailable")
 
 
+class PackagingHardeningTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.project_root = Path(__file__).resolve().parent.parent
+
+    def test_dockerignore_excludes_secrets_and_local_state(self) -> None:
+        dockerignore = (self.project_root / ".dockerignore").read_text().splitlines()
+
+        self.assertIn(".env", dockerignore)
+        self.assertIn(".env.*", dockerignore)
+        self.assertIn(".git", dockerignore)
+        self.assertIn("data/", dockerignore)
+        self.assertIn(".codex/", dockerignore)
+
+    def test_gitignore_does_not_hide_dockerignore(self) -> None:
+        gitignore = (self.project_root / ".gitignore").read_text().splitlines()
+
+        self.assertNotIn(".dockerignore", gitignore)
+
+    def test_dockerfile_runs_as_non_root_user(self) -> None:
+        dockerfile = (self.project_root / "Dockerfile").read_text()
+
+        self.assertIn("adduser --system", dockerfile)
+        self.assertIn("COPY --chown=hcww:hcww", dockerfile)
+        self.assertIn("USER hcww", dockerfile)
+
+    def test_docker_compose_keeps_credentials_runtime_only(self) -> None:
+        compose = (self.project_root / "docker-compose.yml").read_text()
+
+        self.assertIn("env_file:", compose)
+        self.assertIn("- .env", compose)
+        self.assertIn("./data:/app/data", compose)
+
+
 class ApplicationTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
