@@ -275,6 +275,65 @@ class ApplicationTestCase(unittest.TestCase):
                 body=json.dumps(payload).encode("utf-8"),
             )
 
+    def test_webhook_rejects_wrong_shared_secret_when_configured(self) -> None:
+        payload = validation_example_payload()
+
+        with self.assertRaises(PermissionError):
+            self.app.handle_webhook(
+                headers={"X-HCWW-Workflow-Secret": "wrong-secret"},
+                body=json.dumps(payload).encode("utf-8"),
+            )
+
+    def test_production_settings_require_workflow_secret(self) -> None:
+        with self.assertRaises(ValueError):
+            Settings(
+                db_path=os.path.join(self.temp_dir.name, "missing_workflow_secret.db"),
+                env="production",
+                workflow_shared_secret="",
+            )
+
+    def test_legacy_betterstack_secret_env_var_is_used_for_workflow_auth(self) -> None:
+        original_teams_secret = os.environ.pop("TEAMS_WORKFLOW_SHARED_SECRET", None)
+        original_teams_header = os.environ.pop("TEAMS_WORKFLOW_SECRET_HEADER", None)
+        original_betterstack_secret = os.environ.get("BETTERSTACK_WEBHOOK_SHARED_SECRET")
+        try:
+            os.environ["BETTERSTACK_WEBHOOK_SHARED_SECRET"] = "legacy-secret"
+
+            settings = Settings(
+                db_path=os.path.join(self.temp_dir.name, "legacy_secret.db"),
+                env="production",
+            )
+
+            self.assertEqual(settings.workflow_shared_secret, "legacy-secret")
+            self.assertEqual(settings.workflow_secret_header, "X-HCWW-Workflow-Secret")
+        finally:
+            if original_teams_secret is not None:
+                os.environ["TEAMS_WORKFLOW_SHARED_SECRET"] = original_teams_secret
+            if original_teams_header is not None:
+                os.environ["TEAMS_WORKFLOW_SECRET_HEADER"] = original_teams_header
+            if original_betterstack_secret is None:
+                os.environ.pop("BETTERSTACK_WEBHOOK_SHARED_SECRET", None)
+            else:
+                os.environ["BETTERSTACK_WEBHOOK_SHARED_SECRET"] = original_betterstack_secret
+
+    def test_development_settings_report_disabled_webhook_auth(self) -> None:
+        settings = Settings(
+            db_path=os.path.join(self.temp_dir.name, "development_auth.db"),
+            env="development",
+            workflow_shared_secret="",
+        )
+        app = IncidentAgentApplication(settings=settings)
+
+        health = app.handle_health()
+        schema = app.schema_document()
+
+        self.assertFalse(health["auth"]["workflow_webhook"]["required"])
+        self.assertEqual(
+            health["auth"]["workflow_webhook"]["mode"],
+            "disabled_development_only",
+        )
+        self.assertEqual(schema["auth"], health["auth"])
+
     def test_webhook_rejects_invalid_payload(self) -> None:
         payload = validation_example_payload()
         del payload["teams"]["root_message_id"]

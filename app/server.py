@@ -40,6 +40,7 @@ class IncidentAgentApplication:
             "service": self.settings.service_name,
             "environment": self.settings.env,
             "checks": self.store.health(),
+            "auth": self._auth_status(),
             "remediation": self._remediation_status(),
         }
 
@@ -123,6 +124,7 @@ class IncidentAgentApplication:
 
     def schema_document(self) -> Dict[str, Any]:
         schema = describe_webhook_schema()
+        schema["auth"] = self._auth_status()
         schema["remediation"] = self._remediation_status()
         schema["teams_posting"] = self._teams_posting_contract()
         return schema
@@ -130,9 +132,11 @@ class IncidentAgentApplication:
     def _validate_secret(self, headers: Dict[str, str]) -> None:
         expected = self.settings.workflow_shared_secret
         if not expected:
-            return
+            if self.settings.env == "development":
+                return
+            raise PermissionError("Workflow shared secret is not configured")
 
-        actual = self._get_header(headers, "X-HCWW-Workflow-Secret")
+        actual = self._get_header(headers, self.settings.workflow_secret_header)
         if not hmac.compare_digest(actual, expected):
             raise PermissionError("Missing or invalid workflow shared secret")
 
@@ -161,6 +165,26 @@ class IncidentAgentApplication:
             "playbooks": {
                 "cloudflare_cache_purge": self.settings.enable_cache_purge,
                 "known_good_redeploy": self.settings.enable_redeploy,
+            },
+        }
+
+    def _auth_status(self) -> Dict[str, Any]:
+        workflow_secret_configured = bool(self.settings.workflow_shared_secret)
+        return {
+            "workflow_webhook": {
+                "required": workflow_secret_configured,
+                "mode": (
+                    "shared_secret"
+                    if workflow_secret_configured
+                    else "disabled_development_only"
+                ),
+                "header": self.settings.workflow_secret_header,
+            },
+            "admin_api": {
+                "required": True,
+                "mode": "shared_secret",
+                "header": "X-HCWW-Admin-Secret",
+                "configured": bool(self.settings.admin_shared_secret),
             },
         }
 

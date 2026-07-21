@@ -21,7 +21,7 @@ The incident agent is responsible for:
 
 - Standard Teams channel for Better Stack incident posts
 - Teams Workflows or Power Automate flow in the default environment
-- Shared secret for webhook authentication
+- Shared secret for webhook authentication sent in `X-HCWW-Workflow-Secret`
 - `TEAMS_POST_MODE=workflow` for V1 production threaded replies
 - `TEAMS_POST_MODE=webhook` only as a non-threaded Adaptive Card fallback
 
@@ -48,6 +48,9 @@ Populate the values in [`.env`](/Users/rkane/repos/hcww_incident_agent/.env).
 
 Safety-sensitive settings:
 
+- `TEAMS_WORKFLOW_SHARED_SECRET`
+- `TEAMS_WORKFLOW_SECRET_HEADER`
+- `BETTERSTACK_WEBHOOK_SHARED_SECRET`
 - `HCWW_ADMIN_SHARED_SECRET`
 - `HCWW_MAX_REMEDIATION_ATTEMPTS`
 - `HCWW_MAX_PLAYBOOK_RETRIES`
@@ -81,6 +84,11 @@ Recommended production starting values:
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS=300`
 - `HCWW_ENABLE_CACHE_PURGE=false`
 - `HCWW_ENABLE_REDEPLOY=false`
+
+`TEAMS_WORKFLOW_SHARED_SECRET` is required when `HCWW_AGENT_ENV` is anything
+other than `development`. `BETTERSTACK_WEBHOOK_SHARED_SECRET` is accepted as a
+legacy fallback secret name, but new deployments should use
+`TEAMS_WORKFLOW_SHARED_SECRET`.
 
 Start production in diagnostics-only mode. Enable `HCWW_ENABLE_CACHE_PURGE` and
 `HCWW_ENABLE_REDEPLOY` only after validating credentials and running supervised

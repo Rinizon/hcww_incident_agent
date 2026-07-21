@@ -32,6 +32,14 @@ def _env(name: str, default: str = "") -> str:
     return value
 
 
+def _env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and value != "":
+            return value
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str = field(default_factory=lambda: _env("HCWW_AGENT_HOST", "127.0.0.1"))
@@ -41,7 +49,19 @@ class Settings:
     service_name: str = field(default_factory=lambda: _env("HCWW_AGENT_SERVICE_NAME", "hcww"))
     actor_email: str = field(default_factory=lambda: _env("HCWW_AGENT_ACTOR_EMAIL", "incident-agent@hcww.local"))
     public_base_url: str = field(default_factory=lambda: _env("HCWW_AGENT_PUBLIC_BASE_URL", "https://agent.example.com"))
-    workflow_shared_secret: str = field(default_factory=lambda: _env("TEAMS_WORKFLOW_SHARED_SECRET", ""))
+    workflow_shared_secret: str = field(
+        default_factory=lambda: _env_first(
+            "TEAMS_WORKFLOW_SHARED_SECRET",
+            "BETTERSTACK_WEBHOOK_SHARED_SECRET",
+            default="",
+        )
+    )
+    workflow_secret_header: str = field(
+        default_factory=lambda: _env_first(
+            "TEAMS_WORKFLOW_SECRET_HEADER",
+            default="X-HCWW-Workflow-Secret",
+        )
+    )
     admin_shared_secret: str = field(default_factory=lambda: _env("HCWW_ADMIN_SHARED_SECRET", ""))
     teams_post_mode: str = field(default_factory=lambda: _env("TEAMS_POST_MODE", "workflow"))
     teams_webhook_url: str = field(default_factory=lambda: _env("TEAMS_WEBHOOK_URL", ""))
@@ -63,3 +83,10 @@ class Settings:
     remediation_cooldown_seconds: int = field(default_factory=lambda: int(_env("HCWW_REMEDIATION_COOLDOWN_SECONDS", "300")))
     enable_cache_purge: bool = field(default_factory=lambda: _env("HCWW_ENABLE_CACHE_PURGE", "false").lower() == "true")
     enable_redeploy: bool = field(default_factory=lambda: _env("HCWW_ENABLE_REDEPLOY", "false").lower() == "true")
+
+    def __post_init__(self) -> None:
+        if self.env != "development" and not self.workflow_shared_secret:
+            raise ValueError(
+                "TEAMS_WORKFLOW_SHARED_SECRET is required when "
+                "HCWW_AGENT_ENV is not development"
+            )
