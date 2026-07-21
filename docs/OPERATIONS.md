@@ -123,6 +123,37 @@ Inspect the webhook schema:
 curl -s http://127.0.0.1:8787/schema/webhooks/teams/betterstack
 ```
 
+## Supervised Drills
+
+The repository includes a fixture replay harness for local or staging validation:
+
+```bash
+python3 tools/drill_agent.py --list
+python3 tools/drill_agent.py \
+  --agent-url http://127.0.0.1:8787 \
+  --workflow-secret "$TEAMS_WORKFLOW_SHARED_SECRET" \
+  --admin-secret "$HCWW_ADMIN_SHARED_SECRET" \
+  --scenario self-recovery \
+  --strict
+```
+
+Available drills:
+
+- `self-recovery`: recovery fixture should resolve without action attempts
+- `dns-failure`: DNS failure fixture should escalate without mutation
+- `contact-down`: contact fixture exercises contact-path diagnostics
+- `edge-cache-purge`: edge fixture exercises cache-purge eligibility when enabled
+- `failed-redeploy`: persistent edge fixture exercises cache purge plus redeploy escalation when both playbooks are enabled
+- `duplicate-event`: sends the same event twice and expects duplicate suppression on replay
+
+Recommended drill sequence:
+
+1. Start with `HCWW_ENABLE_CACHE_PURGE=false` and `HCWW_ENABLE_REDEPLOY=false`.
+2. Run `self-recovery`, `dns-failure`, `contact-down`, and `duplicate-event`.
+3. Enable `HCWW_ENABLE_CACHE_PURGE=true` only after diagnostics-only drills pass, then run `edge-cache-purge`.
+4. Enable `HCWW_ENABLE_REDEPLOY=true` only after cache-purge validation, then run `failed-redeploy`.
+5. Review each drill's final incident status, action attempt count, and audit events before leaving mutating playbooks enabled.
+
 ## Teams Workflow Contract
 
 The workflow should `POST` to:

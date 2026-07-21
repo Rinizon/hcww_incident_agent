@@ -60,3 +60,11 @@ docker compose up -d --build
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+### Supervised drills
+
+```bash
+python3 tools/drill_agent.py --list
+```
+
+See [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md) for local and staging drill commands.

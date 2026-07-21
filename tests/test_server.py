@@ -20,6 +20,7 @@ from app.remediation import (
 )
 from app.server import IncidentAgentApplication
 from app.schema import PayloadValidationError, validation_example_payload
+from tools.drill_agent import SCENARIOS, evaluate_result, list_scenarios, load_payload, run_scenario
 
 
 class FakeCloudflareClient(CloudflareClient):
@@ -938,3 +939,78 @@ class ApplicationTestCase(unittest.TestCase):
         )
         client = build_deploy_client(settings)
         self.assertEqual(type(client).__name__, "RealDeployClient")
+
+    def test_drill_harness_lists_expected_scenarios(self) -> None:
+        scenarios = list_scenarios(SCENARIOS.values())
+        names = {scenario["name"] for scenario in scenarios}
+
+        self.assertIn("self-recovery", names)
+        self.assertIn("dns-failure", names)
+        self.assertIn("duplicate-event", names)
+        duplicate = next(scenario for scenario in scenarios if scenario["name"] == "duplicate-event")
+        self.assertEqual(duplicate["repeat"], 2)
+
+    def test_drill_harness_mutates_failed_redeploy_payload(self) -> None:
+        payload = load_payload(SCENARIOS["failed-redeploy"])
+
+        self.assertEqual(payload["event_id"], "evt_drill_redeploy_0001")
+        self.assertEqual(payload["betterstack"]["incident_id"], "incident-drill-redeploy-789")
+        self.assertEqual(payload["betterstack"]["monitor_url"], "https://redeploy-fail.hcww.net/")
+
+    def test_drill_harness_evaluates_expected_results(self) -> None:
+        scenario = SCENARIOS["self-recovery"]
+        response = {
+            "incident": {
+                "current_status": "resolved",
+                "action_attempts": [],
+            }
+        }
+        audit = {
+            "audit_events": [
+                {"event_type": "incident.received"},
+                {"event_type": "incident.triaged"},
+                {"event_type": "incident.resolved"},
+            ]
+        }
+
+        checks = evaluate_result(scenario, response, audit)
+
+        self.assertTrue(all(check["ok"] for check in checks))
+
+    def test_drill_harness_replays_with_fake_http_clients(self) -> None:
+        calls = {"post": 0, "get": 0}
+
+        def fake_post(url: str, payload: dict, headers: dict, timeout_seconds: float) -> dict:
+            calls["post"] += 1
+            duplicate = calls["post"] == 2
+            return {
+                "duplicate": duplicate,
+                "incident": {
+                    "incident_id": 77,
+                    "current_status": "resolved",
+                    "action_attempts": [],
+                },
+            }
+
+        def fake_get(url: str, headers: dict, timeout_seconds: float) -> dict:
+            calls["get"] += 1
+            return {
+                "audit_events": [
+                    {"event_type": "incident.received"},
+                    {"event_type": "incident.duplicate_ignored"},
+                ]
+            }
+
+        result = run_scenario(
+            scenario=SCENARIOS["duplicate-event"],
+            agent_url="http://agent.example.test",
+            workflow_secret="workflow-secret",
+            admin_secret="admin-secret",
+            post=fake_post,
+            get=fake_get,
+        )
+
+        self.assertEqual(calls, {"post": 2, "get": 1})
+        self.assertEqual(result["scenario"], "duplicate-event")
+        self.assertTrue(result["responses"][-1]["duplicate"])
+        self.assertTrue(all(check["ok"] for check in result["checks"]))
