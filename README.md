@@ -76,3 +76,7 @@ python3 tools/drill_agent.py --list
 ```
 
 See [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md) for local and staging drill commands.
+
+### Production hardening
+
+Before unattended production use, complete the pre-production checklist in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md). Production should start in diagnostics-only mode, with fail-closed webhook/admin secrets configured, the public URL allowlist verified, Docker secret hygiene confirmed, and mutating playbooks enabled only after supervised drills.

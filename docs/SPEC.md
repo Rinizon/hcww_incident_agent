@@ -60,6 +60,8 @@ Status: Complete.
 
 ## Step 7: Add Production Guardrails and Documentation
 
+Status: Complete.
+
 - Update `README.md` and `docs/OPERATIONS.md` with required production environment variables and fail-closed behavior.
 - Document the allowed URL origins and how to update them safely if HCWW adds monitored domains.
 - Add rollout guidance: diagnostics-only first, then one mutating playbook at a time after supervised drills.

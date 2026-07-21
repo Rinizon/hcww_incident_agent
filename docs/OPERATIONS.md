@@ -99,6 +99,14 @@ redirect targets outside this allowlist. Only add origins after confirming they
 are HCWW-owned public HTTPS surfaces and do not point at private, local, or
 internal services.
 
+Allowed origin change process:
+
+1. Confirm the new origin is an HCWW-owned public HTTPS surface.
+2. Confirm it does not resolve to localhost, private, link-local, internal, or IP-literal targets.
+3. Add it to `HCWW_ALLOWED_PUBLIC_ORIGINS` in staging first.
+4. Run `python3 -m unittest discover -s tests` and the diagnostics-only drill sequence.
+5. Promote the exact value to production only after reviewing `/healthz` and `/schema/webhooks/teams/betterstack`.
+
 Start production in diagnostics-only mode. Enable `HCWW_ENABLE_CACHE_PURGE` and
 `HCWW_ENABLE_REDEPLOY` only after validating credentials and running supervised
 drills for each mutating playbook.
@@ -228,6 +236,22 @@ Agent update payload fields:
 6. Confirm audit records are written and retrievable with `GET /incidents/:incident_id/audit`.
 7. Confirm cache purge and redeploy integrations are disabled until credentials are validated.
 8. Enable one mutating playbook at a time and run a supervised drill.
+
+## Pre-Production Hardening Checklist
+
+Before enabling unattended production remediation:
+
+- Confirm `HCWW_AGENT_ENV` is not `development`.
+- Confirm `TEAMS_WORKFLOW_SHARED_SECRET` and `HCWW_ADMIN_SHARED_SECRET` are present, unique, and stored outside source control.
+- Confirm `/healthz` reports shared-secret workflow auth, a valid `request_policy`, the expected `url_policy`, and diagnostics-only remediation mode.
+- Confirm `.dockerignore` excludes `.env`, `.git`, `data/`, caches, and local artifacts from image builds.
+- Confirm the container runs as the non-root `hcww` user and only `/app/data` needs persistent write access.
+- Confirm `HCWW_ALLOWED_PUBLIC_ORIGINS` contains only HCWW-owned public HTTPS origins.
+- Confirm admin incident and audit endpoints return redacted payloads.
+- Run `python3 -m unittest discover -s tests`.
+- Run the diagnostics-only drill sequence: `self-recovery`, `dns-failure`, `contact-down`, and `duplicate-event`.
+- Enable `HCWW_ENABLE_CACHE_PURGE` only after a supervised cache-purge drill succeeds.
+- Enable `HCWW_ENABLE_REDEPLOY` only after a supervised redeploy drill succeeds and deploy responses show explicit success signals.
 
 ## Cloudflare Hookup
 
