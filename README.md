@@ -44,6 +44,7 @@ Incoming Better Stack workflow payloads are now:
 - restricts diagnostics, smoke checks, and redirect targets to allowed HCWW public origins
 - includes preview-first retention cleanup for old terminal incidents, audit rows, and action attempts
 - prepared for Teams updates through the notifier layer
+- includes incident-type-specific escalation guidance for operator next steps
 - able to attempt cache purge and redeploy playbooks with verification after each action
 - requires explicit deploy success signals before considering redeploy actions successful
 - tracked with persisted remediation action attempts and retry-limited playbook execution

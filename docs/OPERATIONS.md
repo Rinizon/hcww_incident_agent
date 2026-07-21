@@ -248,6 +248,7 @@ Agent update payload fields:
 - `title`: human-readable update title
 - `text`: formatted message body for Teams
 - `details`: structured evidence for the phase
+- `details.operator_guidance`: escalation-only recommended next step and checklist
 - `teams`: original Teams context
 - `reply_target_message_id`: message ID the workflow should reply to
 
@@ -451,6 +452,18 @@ The agent should close the incident as `resolved` without running remediation.
 ### If diagnostics fail and no safe playbook applies
 
 The agent should escalate and provide the diagnostic evidence already gathered.
+Escalated Teams payloads include `operator_guidance` with a concise recommended
+next step and checklist based on incident type and failure mode.
+
+Escalation guidance covers:
+
+- DNS failures
+- Cloudflare or edge failures
+- public availability and route-check failures
+- contact-path failures
+- deploy failure after remediation attempts
+- third-party provider outages
+- URL policy blocks, cooldowns, kill-switch escalations, and unknown failures
 
 ### If the remediation kill switch is enabled
 

@@ -98,6 +98,8 @@ def _classify_incident_type(route: str, text_blob: str) -> str:
         return "dns"
     if route.startswith("/contact"):
         return "contact_path"
+    if any(keyword in text_blob for keyword in ("third-party", "third party", "vendor outage", "provider outage", "upstream provider")):
+        return "third_party_outage"
     if any(keyword in text_blob for keyword in ("cloudflare", "edge", "522", "523", "524", "525", "526", "520", "521")):
         return "edge"
     if any(keyword in text_blob for keyword in ("timeout", "degraded", "latency")):

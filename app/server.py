@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
+from app.escalation_guidance import select_escalation_guidance
 from app.metrics import MetricsCollector
 from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
 from app.redaction import redact_data
@@ -392,9 +393,19 @@ class IncidentAgentApplication:
 
         if diagnostic_results["outcome_status"] != "resolved":
             if self.settings.remediation_disabled:
+                operator_guidance = select_escalation_guidance(
+                    incident,
+                    {
+                        **diagnostic_results,
+                        "remediation": {
+                            "reason": "Global remediation kill switch is enabled",
+                        },
+                    },
+                )
                 disabled_details = {
                     "reason": "Global remediation kill switch is enabled",
                     "remediation_disabled": True,
+                    "operator_guidance": operator_guidance,
                 }
                 incident = self.store.transition_incident_status(
                     incident_id=incident["incident_id"],
@@ -405,7 +416,10 @@ class IncidentAgentApplication:
                 disabled_update = self.notifier.send_incident_update(
                     incident=incident,
                     phase="escalated",
-                    message="Automated remediation is disabled by the global kill switch; escalating for operator review.",
+                    message=(
+                        "Automated remediation is disabled by the global kill switch; "
+                        f"next step: {operator_guidance['recommended_next_step']}"
+                    ),
                     details=disabled_details,
                 )
                 self.store.add_audit_event(
@@ -419,6 +433,7 @@ class IncidentAgentApplication:
                     "incident.escalated",
                     incident_id=incident["incident_id"],
                     reason="remediation_disabled",
+                    recommended_next_step=operator_guidance["recommended_next_step"],
                 )
                 self.logger.info(
                     "teams.update_queued",
@@ -430,9 +445,19 @@ class IncidentAgentApplication:
                 return incident
 
             if self._is_in_remediation_cooldown(incident["incident_id"]):
+                operator_guidance = select_escalation_guidance(
+                    incident,
+                    {
+                        **diagnostic_results,
+                        "remediation": {
+                            "reason": "Recent remediation activity is still within cooldown window",
+                        },
+                    },
+                )
                 cooldown_details = {
                     "reason": "Recent remediation activity is still within cooldown window",
                     "cooldown_seconds": self.settings.remediation_cooldown_seconds,
+                    "operator_guidance": operator_guidance,
                 }
                 incident = self.store.transition_incident_status(
                     incident_id=incident["incident_id"],
@@ -443,7 +468,10 @@ class IncidentAgentApplication:
                 cooldown_update = self.notifier.send_incident_update(
                     incident=incident,
                     phase="escalated",
-                    message="Remediation cooldown is active; escalating to avoid automation loops.",
+                    message=(
+                        "Remediation cooldown is active; "
+                        f"next step: {operator_guidance['recommended_next_step']}"
+                    ),
                     details=cooldown_details,
                 )
                 self.store.add_audit_event(
@@ -458,6 +486,7 @@ class IncidentAgentApplication:
                     incident_id=incident["incident_id"],
                     reason="remediation_cooldown",
                     cooldown_seconds=self.settings.remediation_cooldown_seconds,
+                    recommended_next_step=operator_guidance["recommended_next_step"],
                 )
                 self.logger.info(
                     "teams.update_queued",
@@ -582,6 +611,10 @@ class IncidentAgentApplication:
         final_status = diagnostic_results["outcome_status"]
         if final_status == "escalated":
             self.metrics.increment("incident.escalated")
+            final_result_details["operator_guidance"] = select_escalation_guidance(
+                incident,
+                final_result_details,
+            )
         incident = self.store.transition_incident_status(
             incident_id=incident["incident_id"],
             new_status=final_status,
@@ -593,7 +626,7 @@ class IncidentAgentApplication:
         final_update = self.notifier.send_incident_update(
             incident=incident,
             phase=final_status,
-            message=diagnostic_results["outcome_reason"],
+            message=self._final_update_message(final_status, diagnostic_results, final_result_details),
             details=final_result_details,
         )
         self.store.add_audit_event(
@@ -607,6 +640,9 @@ class IncidentAgentApplication:
             f"incident.{final_status}",
             incident_id=incident["incident_id"],
             outcome_reason=diagnostic_results["outcome_reason"],
+            recommended_next_step=(
+                final_result_details.get("operator_guidance", {}).get("recommended_next_step")
+            ),
         )
         self.logger.info(
             "teams.update_queued",
@@ -616,6 +652,21 @@ class IncidentAgentApplication:
             posted=final_update["posted"],
         )
         return incident
+
+    def _final_update_message(
+        self,
+        final_status: str,
+        diagnostic_results: Dict[str, Any],
+        final_result_details: Dict[str, Any],
+    ) -> str:
+        message = diagnostic_results["outcome_reason"]
+        if final_status != "escalated":
+            return message
+        guidance = final_result_details.get("operator_guidance") or {}
+        next_step = guidance.get("recommended_next_step")
+        if not next_step:
+            return message
+        return f"{message} Next step: {next_step}"
 
     def _is_in_remediation_cooldown(self, incident_id: int) -> bool:
         recent_attempts = self.store.count_action_attempts(

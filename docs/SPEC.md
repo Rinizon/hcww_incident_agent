@@ -42,6 +42,8 @@ Status: Complete.
 
 ## Step 5: Improve Escalation Guidance
 
+Status: Complete.
+
 - Add incident-type-specific operator guidance for DNS, edge, availability, contact-path, deploy failure, third-party outage, and unknown incidents.
 - Include the recommended next step in Teams update payloads and audit details when an incident escalates.
 - Keep messages concise and redacted while still including the strongest diagnostic evidence.

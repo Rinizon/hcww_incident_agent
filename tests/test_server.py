@@ -11,6 +11,7 @@ from pathlib import Path
 from app.classifier import classify_incident
 from app.config import Settings
 from app.diagnostics import DiagnosticEngine
+from app.escalation_guidance import select_escalation_guidance
 from app.notifier import AGENT_MESSAGE_MARKER, SUPPORTED_PHASES, TeamsNotifier
 from app.redaction import MAX_BODY_EXCERPT_CHARS, REDACTED
 from app.remediation import (
@@ -858,6 +859,15 @@ class ApplicationTestCase(unittest.TestCase):
 
         self.assertEqual(classification["incident_type"], "contact_path")
         self.assertEqual(classification["normalized_severity"], "sev2")
+
+    def test_classifier_marks_third_party_provider_outage(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_name"] = "hcww scheduling provider"
+        payload["betterstack"]["raw_body"] = "Upstream provider outage is affecting booking embeds"
+
+        classification = classify_incident({"betterstack": payload["betterstack"]})
+
+        self.assertEqual(classification["incident_type"], "third_party_outage")
         self.assertEqual(classification["current_status"], "triaged")
 
     def test_classifier_marks_recovery_as_resolved(self) -> None:
@@ -998,6 +1008,53 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertFalse(result["http"]["ok"])
         self.assertIn("origin is not allowed", result["http"]["error"])
 
+    def test_escalation_guidance_selects_dns_next_step(self) -> None:
+        guidance = select_escalation_guidance(
+            {"incident_type": "dns"},
+            {
+                "dns": {"ok": False},
+                "http_checks": [],
+                "outcome_reason": "DNS checks failed",
+            },
+        )
+
+        self.assertEqual(guidance["failure_mode"], "dns")
+        self.assertIn("Cloudflare DNS", guidance["recommended_next_step"])
+
+    def test_escalation_guidance_selects_deploy_failure_next_step(self) -> None:
+        guidance = select_escalation_guidance(
+            {"incident_type": "edge"},
+            {
+                "dns": {"ok": True},
+                "http_checks": [{"result": {"ok": False}}],
+                "outcome_reason": "One or more public route checks failed",
+                "remediation": {
+                    "steps": [
+                        {
+                            "playbook": "known_good_redeploy",
+                            "status": "succeeded",
+                        }
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(guidance["failure_mode"], "deploy_failure")
+        self.assertIn("deploy provider", guidance["recommended_next_step"])
+
+    def test_escalation_guidance_selects_third_party_next_step(self) -> None:
+        guidance = select_escalation_guidance(
+            {"incident_type": "third_party_outage"},
+            {
+                "dns": {"ok": True},
+                "http_checks": [{"result": {"ok": False}}],
+                "outcome_reason": "Third-party provider checks failed",
+            },
+        )
+
+        self.assertEqual(guidance["failure_mode"], "third_party_outage")
+        self.assertIn("upstream provider", guidance["recommended_next_step"])
+
     def test_webhook_escalates_when_public_checks_fail(self) -> None:
         payload = self.load_fixture("edge_down.json")
         payload["betterstack"]["monitor_url"] = "https://hcww.net/down/"
@@ -1112,6 +1169,22 @@ class ApplicationTestCase(unittest.TestCase):
         metrics = self.app.metrics.snapshot()
         self.assertEqual(metrics["diagnostics.escalated"], 1)
         self.assertEqual(metrics["incident.escalated"], 1)
+        final_message = self.notifier.sent_messages[-1]["payload"]
+        self.assertIn("Next step:", final_message["message"])
+        self.assertIn("operator_guidance", final_message["details"])
+        self.assertIn(
+            "Cloudflare DNS",
+            final_message["details"]["operator_guidance"]["recommended_next_step"],
+        )
+        audit = self.app.get_incident_audit(body["incident"]["incident_id"])
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        escalated_events = [
+            event
+            for event in audit["audit_events"]
+            if event["event_type"] == "incident.escalated"
+        ]
+        self.assertIn("operator_guidance", escalated_events[-1]["details"])
 
     def test_remediation_kill_switch_escalates_without_mutation(self) -> None:
         settings = Settings(
@@ -1180,6 +1253,7 @@ class ApplicationTestCase(unittest.TestCase):
             escalated[-1]["details"]["reason"],
             "Global remediation kill switch is enabled",
         )
+        self.assertIn("operator_guidance", escalated[-1]["details"])
 
     def test_retention_preview_reports_without_deleting_rows(self) -> None:
         payload = self.load_fixture("edge_down.json")
