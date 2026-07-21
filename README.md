@@ -50,6 +50,7 @@ Incoming Better Stack workflow payloads are now:
 - protected by fail-closed workflow webhook authentication outside explicit development mode
 - packaged with `.env` and local state excluded from Docker builds and runs as a non-root container user
 - starts in diagnostics-only mode unless mutating playbooks are explicitly enabled
+- supports a global remediation kill switch that disables all mutating playbooks
 - backed by fixture-based end-to-end tests and an operations runbook in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md)
 - includes a real Cloudflare cache-purge client for production token and zone wiring
 - includes a real deploy client for Cloudflare Pages deploy hooks and bearer-authenticated deployment APIs
@@ -82,4 +83,4 @@ See [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.
 
 ### Production hardening
 
-Before unattended production use, complete the pre-production checklist in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md). Production should start in diagnostics-only mode, with fail-closed webhook/admin secrets configured, the public URL allowlist verified, Docker secret hygiene confirmed, and mutating playbooks enabled only after supervised drills.
+Before unattended production use, complete the pre-production checklist in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md). Production should start in diagnostics-only mode, with fail-closed webhook/admin secrets configured, the public URL allowlist verified, Docker secret hygiene confirmed, the kill switch understood by operators, and mutating playbooks enabled only after supervised drills.

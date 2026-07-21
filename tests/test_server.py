@@ -240,6 +240,7 @@ class ApplicationTestCase(unittest.TestCase):
     def test_default_settings_start_in_diagnostics_only_mode(self) -> None:
         original_cache_purge = os.environ.pop("HCWW_ENABLE_CACHE_PURGE", None)
         original_redeploy = os.environ.pop("HCWW_ENABLE_REDEPLOY", None)
+        original_remediation_disabled = os.environ.pop("HCWW_REMEDIATION_DISABLED", None)
         try:
             settings = Settings(db_path=os.path.join(self.temp_dir.name, "defaults.db"))
             app = IncidentAgentApplication(settings=settings)
@@ -248,7 +249,9 @@ class ApplicationTestCase(unittest.TestCase):
 
             self.assertFalse(settings.enable_cache_purge)
             self.assertFalse(settings.enable_redeploy)
+            self.assertFalse(settings.remediation_disabled)
             self.assertEqual(health["remediation"]["mode"], "diagnostics_only")
+            self.assertFalse(health["remediation"]["disabled"])
             self.assertFalse(health["remediation"]["playbooks"]["cloudflare_cache_purge"])
             self.assertFalse(health["remediation"]["playbooks"]["known_good_redeploy"])
             self.assertEqual(schema["remediation"], health["remediation"])
@@ -257,6 +260,52 @@ class ApplicationTestCase(unittest.TestCase):
                 os.environ["HCWW_ENABLE_CACHE_PURGE"] = original_cache_purge
             if original_redeploy is not None:
                 os.environ["HCWW_ENABLE_REDEPLOY"] = original_redeploy
+            if original_remediation_disabled is not None:
+                os.environ["HCWW_REMEDIATION_DISABLED"] = original_remediation_disabled
+
+    def test_remediation_kill_switch_forces_playbooks_off_in_health_and_schema(self) -> None:
+        settings = Settings(
+            db_path=os.path.join(self.temp_dir.name, "kill_switch_health.db"),
+            env="test",
+            workflow_shared_secret="test-secret",
+            admin_shared_secret="admin-secret",
+            remediation_disabled=True,
+            enable_cache_purge=True,
+            enable_redeploy=True,
+        )
+        app = IncidentAgentApplication(
+            settings=settings,
+            logger=StructuredLogger(stream=io.StringIO()),
+        )
+
+        health = app.handle_health()
+        schema = app.schema_document()
+
+        self.assertTrue(settings.remediation_disabled)
+        self.assertEqual(health["remediation"]["mode"], "disabled")
+        self.assertTrue(health["remediation"]["disabled"])
+        self.assertFalse(health["remediation"]["playbooks"]["cloudflare_cache_purge"])
+        self.assertFalse(health["remediation"]["playbooks"]["known_good_redeploy"])
+        self.assertTrue(health["remediation"]["configured_playbooks"]["cloudflare_cache_purge"])
+        self.assertTrue(health["remediation"]["configured_playbooks"]["known_good_redeploy"])
+        self.assertEqual(schema["remediation"], health["remediation"])
+
+    def test_remediation_kill_switch_can_be_enabled_from_environment(self) -> None:
+        original_value = os.environ.get("HCWW_REMEDIATION_DISABLED")
+        try:
+            os.environ["HCWW_REMEDIATION_DISABLED"] = "true"
+            settings = Settings(
+                db_path=os.path.join(self.temp_dir.name, "kill_switch_env.db"),
+                env="test",
+                workflow_shared_secret="test-secret",
+            )
+
+            self.assertTrue(settings.remediation_disabled)
+        finally:
+            if original_value is None:
+                os.environ.pop("HCWW_REMEDIATION_DISABLED", None)
+            else:
+                os.environ["HCWW_REMEDIATION_DISABLED"] = original_value
 
     def test_webhook_persists_incident_and_audit(self) -> None:
         payload = self.load_fixture("edge_down.json")
@@ -1025,6 +1074,74 @@ class ApplicationTestCase(unittest.TestCase):
         metrics = self.app.metrics.snapshot()
         self.assertEqual(metrics["diagnostics.escalated"], 1)
         self.assertEqual(metrics["incident.escalated"], 1)
+
+    def test_remediation_kill_switch_escalates_without_mutation(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=os.path.join(self.temp_dir.name, "kill_switch_incident.db"),
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            admin_shared_secret="admin-secret",
+            teams_post_mode="workflow",
+            teams_webhook_url="",
+            smoke_check_url="",
+            smoke_check_expected_text="Hill Country Web Works",
+            remediation_disabled=True,
+            max_remediation_attempts=2,
+            enable_cache_purge=True,
+            enable_redeploy=True,
+        )
+        cloudflare = FakeCloudflareClient()
+        deploy = FakeDeployClient()
+        diagnostics = DiagnosticEngine(
+            settings=settings,
+            fetch=self.fake_fetch,
+            resolve=self.fake_resolve,
+        )
+        remediation = RemediationEngine(
+            settings=settings,
+            diagnostics=diagnostics,
+            cloudflare=cloudflare,
+            deploy=deploy,
+        )
+        app = IncidentAgentApplication(
+            settings=settings,
+            diagnostics=diagnostics,
+            notifier=TeamsNotifier(settings=settings),
+            remediation=remediation,
+            logger=StructuredLogger(stream=io.StringIO()),
+        )
+        remediation.store = app.store
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_url"] = "https://hcww.net/down/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+
+        status_code, body = app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertEqual(body["incident"]["current_status"], "escalated")
+        self.assertEqual(body["incident"]["action_attempts"], [])
+        self.assertEqual(cloudflare.calls, [])
+        self.assertEqual(deploy.calls, 0)
+        audit = app.get_incident_audit(body["incident"]["incident_id"])
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        escalated = [
+            event
+            for event in audit["audit_events"]
+            if event["event_type"] == "incident.escalated"
+        ]
+        self.assertEqual(
+            escalated[-1]["details"]["reason"],
+            "Global remediation kill switch is enabled",
+        )
 
     def test_webhook_redeploys_when_cache_purge_does_not_recover(self) -> None:
         payload = self.load_fixture("edge_down.json")

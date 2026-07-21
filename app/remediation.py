@@ -211,6 +211,8 @@ class RealCloudflareClient(CloudflareClient):
 
 
 def build_cloudflare_client(settings: Settings) -> CloudflareClient:
+    if settings.remediation_disabled or not settings.enable_cache_purge:
+        return NullCloudflareClient()
     if settings.cloudflare_api_token and settings.cloudflare_zone_id:
         return RealCloudflareClient(
             api_base_url=settings.cloudflare_api_base_url,
@@ -221,7 +223,7 @@ def build_cloudflare_client(settings: Settings) -> CloudflareClient:
 
 
 def build_deploy_client(settings: Settings) -> DeployClient:
-    if not settings.enable_redeploy or not settings.deploy_base_url:
+    if settings.remediation_disabled or not settings.enable_redeploy or not settings.deploy_base_url:
         return NullDeployClient()
 
     if settings.deploy_mode == "deploy_hook":
@@ -254,6 +256,8 @@ class RemediationEngine:
             self.deploy = build_deploy_client(self.settings)
 
     def plan(self, incident: Dict[str, Any], diagnostics_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if self.settings.remediation_disabled:
+            return []
         if diagnostics_result["outcome_status"] == "resolved":
             return []
         if not diagnostics_result.get("dns", {}).get("ok"):
@@ -278,7 +282,7 @@ class RemediationEngine:
             return []
         steps: List[Dict[str, Any]] = []
 
-        if incident_type in {"edge", "availability", "contact_path"} and self.settings.enable_cache_purge:
+        if incident_type in {"edge", "availability", "contact_path"} and self._cache_purge_enabled():
             maybe_step = self._build_step(
                 incident,
                 "cloudflare_cache_purge",
@@ -288,7 +292,7 @@ class RemediationEngine:
             if maybe_step:
                 steps.append(maybe_step)
 
-        if incident_type in {"edge", "availability"} and self.settings.enable_redeploy:
+        if incident_type in {"edge", "availability"} and self._redeploy_enabled():
             maybe_step = self._build_step(
                 incident,
                 "known_good_redeploy",
@@ -447,3 +451,9 @@ class RemediationEngine:
             "action_type": action_type,
             "inputs": inputs,
         }
+
+    def _cache_purge_enabled(self) -> bool:
+        return self.settings.enable_cache_purge and not self.settings.remediation_disabled
+
+    def _redeploy_enabled(self) -> bool:
+        return self.settings.enable_redeploy and not self.settings.remediation_disabled

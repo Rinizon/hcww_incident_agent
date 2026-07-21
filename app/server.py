@@ -231,13 +231,26 @@ class IncidentAgentApplication:
         return ""
 
     def _remediation_status(self) -> Dict[str, Any]:
+        effective_cache_purge = (
+            self.settings.enable_cache_purge and not self.settings.remediation_disabled
+        )
+        effective_redeploy = (
+            self.settings.enable_redeploy and not self.settings.remediation_disabled
+        )
         return {
             "mode": (
-                "mutating"
-                if self.settings.enable_cache_purge or self.settings.enable_redeploy
+                "disabled"
+                if self.settings.remediation_disabled
+                else "mutating"
+                if effective_cache_purge or effective_redeploy
                 else "diagnostics_only"
             ),
+            "disabled": self.settings.remediation_disabled,
             "playbooks": {
+                "cloudflare_cache_purge": effective_cache_purge,
+                "known_good_redeploy": effective_redeploy,
+            },
+            "configured_playbooks": {
                 "cloudflare_cache_purge": self.settings.enable_cache_purge,
                 "known_good_redeploy": self.settings.enable_redeploy,
             },
@@ -378,6 +391,44 @@ class IncidentAgentApplication:
         )
 
         if diagnostic_results["outcome_status"] != "resolved":
+            if self.settings.remediation_disabled:
+                disabled_details = {
+                    "reason": "Global remediation kill switch is enabled",
+                    "remediation_disabled": True,
+                }
+                incident = self.store.transition_incident_status(
+                    incident_id=incident["incident_id"],
+                    new_status="escalated",
+                    summary="Remediation skipped because kill switch is enabled",
+                    details=disabled_details,
+                )
+                disabled_update = self.notifier.send_incident_update(
+                    incident=incident,
+                    phase="escalated",
+                    message="Automated remediation is disabled by the global kill switch; escalating for operator review.",
+                    details=disabled_details,
+                )
+                self.store.add_audit_event(
+                    incident_id=incident["incident_id"],
+                    event_type="teams.update.escalated",
+                    summary="Queued Teams kill-switch escalation update",
+                    details=disabled_update,
+                )
+                self.metrics.increment("incident.escalated")
+                self.logger.warning(
+                    "incident.escalated",
+                    incident_id=incident["incident_id"],
+                    reason="remediation_disabled",
+                )
+                self.logger.info(
+                    "teams.update_queued",
+                    incident_id=incident["incident_id"],
+                    phase="escalated",
+                    mode=disabled_update["mode"],
+                    posted=disabled_update["posted"],
+                )
+                return incident
+
             if self._is_in_remediation_cooldown(incident["incident_id"]):
                 cooldown_details = {
                     "reason": "Recent remediation activity is still within cooldown window",

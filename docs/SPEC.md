@@ -24,6 +24,8 @@ Status: Complete.
 
 ## Step 3: Add a Global Remediation Kill Switch
 
+Status: Complete.
+
 - Add `HCWW_REMEDIATION_DISABLED`, defaulting to `false`.
 - When enabled, force all mutating playbooks off even if cache purge or redeploy flags are true.
 - Show kill-switch state in `/healthz` and schema output.

@@ -47,6 +47,10 @@ def _env_first(*names: str, default: str = "") -> str:
     return default
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    return _env(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str = field(default_factory=lambda: _env("HCWW_AGENT_HOST", "127.0.0.1"))
@@ -92,8 +96,9 @@ class Settings:
     max_remediation_attempts: int = field(default_factory=lambda: int(_env("HCWW_MAX_REMEDIATION_ATTEMPTS", "2")))
     max_playbook_retries: int = field(default_factory=lambda: int(_env("HCWW_MAX_PLAYBOOK_RETRIES", "1")))
     remediation_cooldown_seconds: int = field(default_factory=lambda: int(_env("HCWW_REMEDIATION_COOLDOWN_SECONDS", "300")))
-    enable_cache_purge: bool = field(default_factory=lambda: _env("HCWW_ENABLE_CACHE_PURGE", "false").lower() == "true")
-    enable_redeploy: bool = field(default_factory=lambda: _env("HCWW_ENABLE_REDEPLOY", "false").lower() == "true")
+    remediation_disabled: bool = field(default_factory=lambda: _env_bool("HCWW_REMEDIATION_DISABLED"))
+    enable_cache_purge: bool = field(default_factory=lambda: _env_bool("HCWW_ENABLE_CACHE_PURGE"))
+    enable_redeploy: bool = field(default_factory=lambda: _env_bool("HCWW_ENABLE_REDEPLOY"))
 
     def __post_init__(self) -> None:
         if self.env != "development" and not self.workflow_shared_secret:

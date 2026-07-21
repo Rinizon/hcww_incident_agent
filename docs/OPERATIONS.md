@@ -56,6 +56,7 @@ Safety-sensitive settings:
 - `HCWW_MAX_PLAYBOOK_RETRIES`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS`
 - `HCWW_MAX_WEBHOOK_BODY_BYTES`
+- `HCWW_REMEDIATION_DISABLED`
 - `HCWW_ENABLE_CACHE_PURGE`
 - `HCWW_ENABLE_REDEPLOY`
 
@@ -85,6 +86,7 @@ Recommended production starting values:
 - `HCWW_MAX_PLAYBOOK_RETRIES=1`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS=300`
 - `HCWW_MAX_WEBHOOK_BODY_BYTES=65536`
+- `HCWW_REMEDIATION_DISABLED=false`
 - `HCWW_ENABLE_CACHE_PURGE=false`
 - `HCWW_ENABLE_REDEPLOY=false`
 
@@ -110,6 +112,12 @@ Allowed origin change process:
 Start production in diagnostics-only mode. Enable `HCWW_ENABLE_CACHE_PURGE` and
 `HCWW_ENABLE_REDEPLOY` only after validating credentials and running supervised
 drills for each mutating playbook.
+
+Set `HCWW_REMEDIATION_DISABLED=true` as the global remediation kill switch. When
+enabled, `/healthz` reports remediation mode as `disabled`, all effective
+playbooks as off, and the configured playbook flags separately for operator
+visibility. Any unresolved incident escalates without action attempts or
+external mutation.
 
 ## Local Validation
 
@@ -178,10 +186,11 @@ Available drills:
 Recommended drill sequence:
 
 1. Start with `HCWW_ENABLE_CACHE_PURGE=false` and `HCWW_ENABLE_REDEPLOY=false`.
-2. Run `self-recovery`, `dns-failure`, `contact-down`, and `duplicate-event`.
-3. Enable `HCWW_ENABLE_CACHE_PURGE=true` only after diagnostics-only drills pass, then run `edge-cache-purge`.
-4. Enable `HCWW_ENABLE_REDEPLOY=true` only after cache-purge validation, then run `failed-redeploy`.
-5. Review each drill's final incident status, action attempt count, and audit events before leaving mutating playbooks enabled.
+2. Confirm `HCWW_REMEDIATION_DISABLED=false` before testing any mutating playbook.
+3. Run `self-recovery`, `dns-failure`, `contact-down`, and `duplicate-event`.
+4. Enable `HCWW_ENABLE_CACHE_PURGE=true` only after diagnostics-only drills pass, then run `edge-cache-purge`.
+5. Enable `HCWW_ENABLE_REDEPLOY=true` only after cache-purge validation, then run `failed-redeploy`.
+6. Review each drill's final incident status, action attempt count, and audit events before leaving mutating playbooks enabled.
 
 ## Teams Workflow Contract
 
@@ -252,6 +261,7 @@ Before enabling unattended production remediation:
 - Confirm `HCWW_AGENT_ENV` is not `development`.
 - Confirm `TEAMS_WORKFLOW_SHARED_SECRET` and `HCWW_ADMIN_SHARED_SECRET` are present, unique, and stored outside source control.
 - Confirm `/healthz` reports shared-secret workflow auth, a valid `request_policy`, the expected `url_policy`, and diagnostics-only remediation mode.
+- Confirm operators know how to set `HCWW_REMEDIATION_DISABLED=true` and restart or redeploy the service during an emergency.
 - Confirm `.dockerignore` excludes `.env`, `.git`, `data/`, caches, and local artifacts from image builds.
 - Confirm the container runs as the non-root `hcww` user and only `/app/data` needs persistent write access.
 - Confirm `HCWW_ALLOWED_PUBLIC_ORIGINS` contains only HCWW-owned public HTTPS origins.
@@ -382,6 +392,7 @@ The current implementation includes:
 - centralized redaction for raw payloads, secrets, sensitive headers, deploy/webhook URLs, and large body excerpts
 - structured JSON logs for incident lifecycle and request rejection events
 - admin-secret-protected runtime metrics and health-summary counters
+- a global remediation kill switch through `HCWW_REMEDIATION_DISABLED`
 - playbook feature flags for risky actions
 
 ## Routine Operator Checks
@@ -402,6 +413,12 @@ The agent should close the incident as `resolved` without running remediation.
 ### If diagnostics fail and no safe playbook applies
 
 The agent should escalate and provide the diagnostic evidence already gathered.
+
+### If the remediation kill switch is enabled
+
+The agent should escalate unresolved incidents without recording action attempts
+or calling Cloudflare or deploy integrations. `/healthz` should report
+`remediation.mode` as `disabled`.
 
 ### If remediation starts but cooldown is active on a repeated alert
 
