@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
@@ -98,6 +99,32 @@ class IncidentAgentApplication:
     def get_incident_audit(self, incident_id: int) -> Dict[str, Any]:
         return {"audit_events": self.store.list_audit_events(incident_id)}
 
+    def handle_admin_list_incidents(self, headers: Dict[str, str]) -> Dict[str, Any]:
+        self._validate_admin_secret(headers)
+        return {
+            "incidents": [
+                self._redact_incident(incident)
+                for incident in self.store.list_incidents()
+            ]
+        }
+
+    def handle_admin_get_incident(
+        self, headers: Dict[str, str], incident_id: int
+    ) -> Optional[Dict[str, Any]]:
+        self._validate_admin_secret(headers)
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            return None
+        return self._redact_incident(incident)
+
+    def handle_admin_get_incident_audit(
+        self, headers: Dict[str, str], incident_id: int
+    ) -> Optional[Dict[str, Any]]:
+        self._validate_admin_secret(headers)
+        if self.store.get_incident(incident_id) is None:
+            return None
+        return {"audit_events": self.store.list_audit_events(incident_id)}
+
     def schema_document(self) -> Dict[str, Any]:
         return describe_webhook_schema()
 
@@ -106,9 +133,40 @@ class IncidentAgentApplication:
         if not expected:
             return
 
-        actual = headers.get("X-HCWW-Workflow-Secret", "")
-        if actual != expected:
+        actual = self._get_header(headers, "X-HCWW-Workflow-Secret")
+        if not hmac.compare_digest(actual, expected):
             raise PermissionError("Missing or invalid workflow shared secret")
+
+    def _validate_admin_secret(self, headers: Dict[str, str]) -> None:
+        expected = self.settings.admin_shared_secret
+        if not expected:
+            raise PermissionError("Admin shared secret is not configured")
+
+        actual = self._get_header(headers, "X-HCWW-Admin-Secret")
+        if not hmac.compare_digest(actual, expected):
+            raise PermissionError("Missing or invalid admin shared secret")
+
+    def _get_header(self, headers: Dict[str, str], name: str) -> str:
+        for key, value in headers.items():
+            if key.lower() == name.lower():
+                return value
+        return ""
+
+    def _redact_incident(self, incident: Dict[str, Any]) -> Dict[str, Any]:
+        redacted = dict(incident)
+        redacted.pop("raw_payload", None)
+        redacted["action_attempts"] = [
+            self._redact_action_attempt(attempt)
+            for attempt in incident.get("action_attempts", [])
+        ]
+        return redacted
+
+    def _redact_action_attempt(self, attempt: Dict[str, Any]) -> Dict[str, Any]:
+        redacted = dict(attempt)
+        result = dict(redacted.get("result") or {})
+        result.pop("target_url", None)
+        redacted["result"] = result
+        return redacted
 
     def _is_self_generated_event(self, validated: Dict[str, Any]) -> bool:
         betterstack = validated.get("betterstack", {})
@@ -321,25 +379,33 @@ def create_http_handler(app: IncidentAgentApplication):
                     self._send_json(HTTPStatus.OK, app.schema_document())
                     return
                 if path == "/incidents":
-                    self._send_json(HTTPStatus.OK, app.list_incidents())
+                    self._send_json(
+                        HTTPStatus.OK,
+                        app.handle_admin_list_incidents(dict(self.headers)),
+                    )
                     return
                 if path.startswith("/incidents/") and path.endswith("/audit"):
                     incident_id = self._parse_incident_id(path, suffix="/audit")
-                    incident = app.get_incident(incident_id)
-                    if incident is None:
+                    audit = app.handle_admin_get_incident_audit(
+                        dict(self.headers),
+                        incident_id,
+                    )
+                    if audit is None:
                         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Incident not found"})
                         return
-                    self._send_json(HTTPStatus.OK, app.get_incident_audit(incident_id))
+                    self._send_json(HTTPStatus.OK, audit)
                     return
                 if path.startswith("/incidents/"):
                     incident_id = self._parse_incident_id(path)
-                    incident = app.get_incident(incident_id)
+                    incident = app.handle_admin_get_incident(dict(self.headers), incident_id)
                     if incident is None:
                         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Incident not found"})
                         return
                     self._send_json(HTTPStatus.OK, {"incident": incident})
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Route not found"})
+            except PermissionError as exc:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": str(exc)})
             except ValueError:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid incident identifier"})
 

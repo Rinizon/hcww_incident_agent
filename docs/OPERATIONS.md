@@ -51,6 +51,7 @@ Populate the values in [`.env`](/Users/rkane/repos/hcww_incident_agent/.env).
 
 Safety-sensitive settings:
 
+- `HCWW_ADMIN_SHARED_SECRET`
 - `HCWW_MAX_REMEDIATION_ATTEMPTS`
 - `HCWW_MAX_PLAYBOOK_RETRIES`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS`
@@ -119,6 +120,10 @@ Headers:
 
 - `Content-Type: application/json`
 - `X-HCWW-Workflow-Secret: <shared secret>`
+
+Incident read endpoints require:
+
+- `X-HCWW-Admin-Secret: <admin shared secret>`
 
 Payload requirements:
 

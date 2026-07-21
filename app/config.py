@@ -42,6 +42,7 @@ class Settings:
     actor_email: str = field(default_factory=lambda: _env("HCWW_AGENT_ACTOR_EMAIL", "incident-agent@hcww.local"))
     public_base_url: str = field(default_factory=lambda: _env("HCWW_AGENT_PUBLIC_BASE_URL", "https://agent.example.com"))
     workflow_shared_secret: str = field(default_factory=lambda: _env("TEAMS_WORKFLOW_SHARED_SECRET", ""))
+    admin_shared_secret: str = field(default_factory=lambda: _env("HCWW_ADMIN_SHARED_SECRET", ""))
     teams_post_mode: str = field(default_factory=lambda: _env("TEAMS_POST_MODE", "workflow"))
     teams_webhook_url: str = field(default_factory=lambda: _env("TEAMS_WEBHOOK_URL", ""))
     cloudflare_api_base_url: str = field(

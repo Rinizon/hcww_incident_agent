@@ -52,6 +52,7 @@ class ApplicationTestCase(unittest.TestCase):
             actor_email="incident-agent@hcww.local",
             public_base_url="https://agent.example.com",
             workflow_shared_secret="test-secret",
+            admin_shared_secret="admin-secret",
             teams_post_mode="workflow",
             teams_webhook_url="",
             cloudflare_api_token="",
@@ -153,6 +154,68 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertIn("teams.update.acknowledged", event_types)
         self.assertIn("teams.update.diagnosis", event_types)
         self.assertIn("teams.update.resolved", event_types)
+
+    def test_admin_incident_reads_require_shared_secret(self) -> None:
+        with self.assertRaises(PermissionError):
+            self.app.handle_admin_list_incidents(headers={})
+
+        with self.assertRaises(PermissionError):
+            self.app.handle_admin_list_incidents(headers={"X-HCWW-Admin-Secret": "wrong-secret"})
+
+    def test_admin_secret_header_is_case_insensitive(self) -> None:
+        body = self.app.handle_admin_list_incidents(
+            headers={"x-hcww-admin-secret": "admin-secret"}
+        )
+
+        self.assertEqual(body["incidents"], [])
+
+    def test_admin_incident_reads_are_redacted(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        incident_id = body["incident"]["incident_id"]
+
+        list_body = self.app.handle_admin_list_incidents(
+            headers={"X-HCWW-Admin-Secret": "admin-secret"}
+        )
+        detail = self.app.handle_admin_get_incident(
+            headers={"X-HCWW-Admin-Secret": "admin-secret"},
+            incident_id=incident_id,
+        )
+        audit = self.app.handle_admin_get_incident_audit(
+            headers={"X-HCWW-Admin-Secret": "admin-secret"},
+            incident_id=incident_id,
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertEqual(len(list_body["incidents"]), 1)
+        self.assertNotIn("raw_payload", list_body["incidents"][0])
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertNotIn("raw_payload", detail)
+        self.assertEqual(detail["incident_id"], incident_id)
+        self.assertIsNotNone(audit)
+        assert audit is not None
+        self.assertGreater(len(audit["audit_events"]), 0)
+
+    def test_admin_incident_reads_fail_when_secret_is_unconfigured(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=os.path.join(self.temp_dir.name, "unconfigured_admin.db"),
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            admin_shared_secret="",
+        )
+        app = IncidentAgentApplication(settings=settings)
+
+        with self.assertRaises(PermissionError):
+            app.handle_admin_list_incidents(headers={"X-HCWW-Admin-Secret": "admin-secret"})
 
     def test_webhook_requires_shared_secret_when_configured(self) -> None:
         payload = validation_example_payload()
