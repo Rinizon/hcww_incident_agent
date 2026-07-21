@@ -49,7 +49,6 @@ class Settings:
         default_factory=lambda: _env("CLOUDFLARE_API_BASE_URL", "https://api.cloudflare.com/client/v4")
     )
     cloudflare_api_token: str = field(default_factory=lambda: _env("CLOUDFLARE_API_TOKEN", ""))
-    cloudflare_account_id: str = field(default_factory=lambda: _env("CLOUDFLARE_ACCOUNT_ID", ""))
     cloudflare_zone_id: str = field(default_factory=lambda: _env("CLOUDFLARE_ZONE_ID", ""))
     deploy_mode: str = field(default_factory=lambda: _env("HCWW_DEPLOY_MODE", "deploy_hook"))
     deploy_base_url: str = field(default_factory=lambda: _env("HCWW_DEPLOY_BASE_URL", ""))

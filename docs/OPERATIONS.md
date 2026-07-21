@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This runbook covers deployment, configuration, and day-to-day operations for the HCWW incident agent as of July 18, 2026.
+This runbook covers deployment, configuration, supervised rollout, and day-to-day operations for the HCWW incident agent.
 
 ## Production Responsibilities
 
@@ -24,7 +24,6 @@ The incident agent is responsible for:
 - Shared secret for webhook authentication
 - `TEAMS_POST_MODE=workflow` for V1 production threaded replies
 - `TEAMS_POST_MODE=webhook` only as a non-threaded Adaptive Card fallback
-- future Graph API path if workflow-managed threaded replies outgrow connector limits
 
 ### Better Stack
 
@@ -35,7 +34,6 @@ The incident agent is responsible for:
 ### Cloudflare
 
 - API token scoped for cache purge
-- Account ID
 - Zone ID
 - Cloudflare API base URL
 

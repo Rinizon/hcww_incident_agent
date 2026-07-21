@@ -122,14 +122,6 @@ class IncidentStore:
             connection.execute("SELECT 1").fetchone()
         return {"database": "ok"}
 
-    def get_incident_by_source_event_id(self, source_event_id: str) -> Optional[Dict[str, Any]]:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM incidents WHERE source_event_id = ?",
-                (source_event_id,),
-            ).fetchone()
-            return self._row_to_incident(row) if row else None
-
     def claim_incident_event(
         self, payload: Dict[str, Any], classification: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -313,11 +305,6 @@ class IncidentStore:
                     "outcome": "created" if created else "updated",
                     "incident": self.get_incident(incident_id, connection=connection),
                 }
-
-    def upsert_incident(
-        self, payload: Dict[str, Any], classification: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        return self.claim_incident_event(payload, classification)["incident"]
 
     def transition_incident_status(
         self,

@@ -78,7 +78,6 @@ class ApplicationTestCase(unittest.TestCase):
             teams_post_mode="workflow",
             teams_webhook_url="",
             cloudflare_api_token="",
-            cloudflare_account_id="",
             cloudflare_zone_id="",
             deploy_base_url="",
             deploy_api_token="",

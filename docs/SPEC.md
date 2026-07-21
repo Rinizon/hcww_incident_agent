@@ -329,7 +329,7 @@ Responsibilities:
 Responsibilities:
 
 - Cloudflare API calls
-- Better Stack API lookups
+- Better Stack metadata consumption from forwarded workflow payloads
 - deployment hook or deployment API calls
 - Teams update posting
 
@@ -388,18 +388,13 @@ V1 incident storage should minimally track:
 
 ## 15. API Surface
 
-Initial internal endpoints:
+Internal endpoints:
 
 - `POST /webhooks/teams/betterstack`
 - `GET /healthz`
 - `GET /incidents`
 - `GET /incidents/:incident_id`
 - `GET /incidents/:incident_id/audit`
-
-Optional later endpoints:
-
-- `POST /incidents/:incident_id/retry`
-- `POST /incidents/:incident_id/resolve`
 
 ## 16. Status Lifecycle
 
@@ -441,11 +436,9 @@ The environment should support configuration for:
 
 - service host and port
 - database path
-- Better Stack API token and base URL
 - Teams workflow shared secret
-- Teams tenant, team, and channel context defaults where useful
 - Teams posting mechanism credentials
-- Cloudflare API token, account ID, and zone ID
+- Cloudflare API token and zone ID
 - deployment hook or deployment API credentials
 - smoke-check URLs and expected content markers
 - retry limits, timeouts, and cooldown values
@@ -462,54 +455,52 @@ V1 is successful when it can:
 - verify recovery and close the incident when successful
 - escalate with useful operator context when unsuccessful
 
-## 20. Implementation Milestones
+## 20. Implementation Status
 
-### Milestone 1
+### Milestone 1: Complete
 
 - scaffold service
 - define payload schema
 - implement health endpoint
 - implement incident persistence
 
-### Milestone 2
+### Milestone 2: Complete
 
 - implement Teams workflow ingestion
 - implement Better Stack metadata parsing
 - implement severity normalization
 
-### Milestone 3
+### Milestone 3: Complete
 
 - implement public HTTP and DNS diagnostics
-- implement Teams threaded updates
+- implement Teams workflow update payloads for threaded replies
 - implement incident lifecycle transitions
 
-### Milestone 4
+### Milestone 4: Complete
 
 - implement first remediation playbooks
 - add verification and retry handling
 - add audit views
 
-### Milestone 5
+### Milestone 5: Complete
 
 - harden safety controls
 - add end-to-end test fixtures
 - document deployment and operational runbook
 
-## 21. Open Questions
+## 21. Current Product Decisions
 
-- Which exact Teams posting method will be used for threaded replies: Graph API, Power Automate action, or another supported Teams connector path?
-- What deployment mechanism is authoritative for Cloudflare Pages / Workers remediation: deploy hook, Git provider integration, or direct API flow?
-- Is there a first-party way to verify the hosted contact form dependency beyond markup and redirect validation?
-- Which smoke-check content markers should be treated as authoritative for each core route?
+- Teams posting uses workflow-managed threaded replies in V1. Direct webhook mode remains available only as a non-threaded Adaptive Card fallback.
+- Deployment remediation supports Cloudflare Pages deploy hooks and bearer-authenticated deployment APIs.
+- Hosted contact form validation is non-destructive and based on contact route availability, thank-you route availability, and configured form action presence.
+- Smoke-check routes and content markers are runtime configuration values documented in [OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md).
 
-## 22. Recommended Next Step
+## 22. Release Readiness
 
-Implement Milestone 1 and 2 first:
+The V1 codebase is a release candidate. Before unattended production use:
 
-- choose the runtime
-- formalize the webhook payload contract
-- define the database schema
-- stub the classifier
-- stub Teams update publishing
-
-This creates a thin but testable vertical slice that can receive a real incident and record the intended workflow before mutating systems.
+- deploy with mutating playbooks disabled
+- validate Teams workflow ingestion and threaded reply posting
+- run supervised diagnostics-only drills
+- enable cache purge and redeploy one at a time after successful supervised drills
+- confirm SQLite persistence and backup behavior in the runtime environment

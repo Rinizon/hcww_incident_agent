@@ -8,13 +8,15 @@ The agent receives Better Stack incident alerts that arrive in Microsoft Teams, 
 
 ## Current Status
 
-Version 1 is currently in specification and design.
+Version 1 is implemented as a release candidate. The codebase is ready for
+staging and supervised production drills before unattended remediation is
+enabled.
 
 See [docs/SPEC.md](/Users/rkane/repos/hcww_incident_agent/docs/SPEC.md) for the working v1 product and technical specification.
 
-## Milestone 1 through 5
+## Implemented Capabilities
 
-Milestones 1 through 5 are implemented as a zero-dependency Python service with SQLite persistence, first-pass Better Stack classification, public diagnostics, Teams update orchestration, initial remediation playbooks, and production hardening controls.
+The agent is implemented as a zero-dependency Python service with SQLite persistence, Better Stack classification, public diagnostics, Teams update orchestration, initial remediation playbooks, and production hardening controls.
 
 ### Available endpoints
 
