@@ -75,8 +75,12 @@ Recommended production starting values:
 - `HCWW_MAX_REMEDIATION_ATTEMPTS=2`
 - `HCWW_MAX_PLAYBOOK_RETRIES=1`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS=300`
-- `HCWW_ENABLE_CACHE_PURGE=true`
-- `HCWW_ENABLE_REDEPLOY=true`
+- `HCWW_ENABLE_CACHE_PURGE=false`
+- `HCWW_ENABLE_REDEPLOY=false`
+
+Start production in diagnostics-only mode. Enable `HCWW_ENABLE_CACHE_PURGE` and
+`HCWW_ENABLE_REDEPLOY` only after validating credentials and running supervised
+drills for each mutating playbook.
 
 ## Local Validation
 
@@ -103,6 +107,9 @@ Health check:
 ```bash
 curl -s http://127.0.0.1:8787/healthz
 ```
+
+The health response includes a `remediation` block showing whether the agent is
+running in diagnostics-only mode or has mutating playbooks enabled.
 
 Inspect the webhook schema:
 

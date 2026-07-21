@@ -141,6 +141,30 @@ class ApplicationTestCase(unittest.TestCase):
 
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["checks"]["database"], "ok")
+        self.assertEqual(body["remediation"]["mode"], "mutating")
+        self.assertTrue(body["remediation"]["playbooks"]["cloudflare_cache_purge"])
+        self.assertTrue(body["remediation"]["playbooks"]["known_good_redeploy"])
+
+    def test_default_settings_start_in_diagnostics_only_mode(self) -> None:
+        original_cache_purge = os.environ.pop("HCWW_ENABLE_CACHE_PURGE", None)
+        original_redeploy = os.environ.pop("HCWW_ENABLE_REDEPLOY", None)
+        try:
+            settings = Settings(db_path=os.path.join(self.temp_dir.name, "defaults.db"))
+            app = IncidentAgentApplication(settings=settings)
+            health = app.handle_health()
+            schema = app.schema_document()
+
+            self.assertFalse(settings.enable_cache_purge)
+            self.assertFalse(settings.enable_redeploy)
+            self.assertEqual(health["remediation"]["mode"], "diagnostics_only")
+            self.assertFalse(health["remediation"]["playbooks"]["cloudflare_cache_purge"])
+            self.assertFalse(health["remediation"]["playbooks"]["known_good_redeploy"])
+            self.assertEqual(schema["remediation"], health["remediation"])
+        finally:
+            if original_cache_purge is not None:
+                os.environ["HCWW_ENABLE_CACHE_PURGE"] = original_cache_purge
+            if original_redeploy is not None:
+                os.environ["HCWW_ENABLE_REDEPLOY"] = original_redeploy
 
     def test_webhook_persists_incident_and_audit(self) -> None:
         payload = self.load_fixture("edge_down.json")

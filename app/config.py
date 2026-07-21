@@ -60,5 +60,5 @@ class Settings:
     max_remediation_attempts: int = field(default_factory=lambda: int(_env("HCWW_MAX_REMEDIATION_ATTEMPTS", "2")))
     max_playbook_retries: int = field(default_factory=lambda: int(_env("HCWW_MAX_PLAYBOOK_RETRIES", "1")))
     remediation_cooldown_seconds: int = field(default_factory=lambda: int(_env("HCWW_REMEDIATION_COOLDOWN_SECONDS", "300")))
-    enable_cache_purge: bool = field(default_factory=lambda: _env("HCWW_ENABLE_CACHE_PURGE", "true").lower() == "true")
-    enable_redeploy: bool = field(default_factory=lambda: _env("HCWW_ENABLE_REDEPLOY", "true").lower() == "true")
+    enable_cache_purge: bool = field(default_factory=lambda: _env("HCWW_ENABLE_CACHE_PURGE", "false").lower() == "true")
+    enable_redeploy: bool = field(default_factory=lambda: _env("HCWW_ENABLE_REDEPLOY", "false").lower() == "true")

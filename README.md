@@ -37,6 +37,7 @@ Incoming Better Stack workflow payloads are now:
 - able to attempt cache purge and redeploy playbooks with verification after each action
 - tracked with persisted remediation action attempts and retry-limited playbook execution
 - protected by duplicate event suppression, cooldown-based loop prevention, and per-playbook retry limits
+- starts in diagnostics-only mode unless mutating playbooks are explicitly enabled
 - backed by fixture-based end-to-end tests and an operations runbook in [docs/OPERATIONS.md](/Users/rkane/repos/hcww_incident_agent/docs/OPERATIONS.md)
 - includes a real Cloudflare cache-purge client for production token and zone wiring
 - includes a real deploy client for Cloudflare Pages deploy hooks and bearer-authenticated deployment APIs

@@ -40,6 +40,7 @@ class IncidentAgentApplication:
             "service": self.settings.service_name,
             "environment": self.settings.env,
             "checks": self.store.health(),
+            "remediation": self._remediation_status(),
         }
 
     def handle_webhook(
@@ -121,7 +122,9 @@ class IncidentAgentApplication:
         return {"audit_events": self.store.list_audit_events(incident_id)}
 
     def schema_document(self) -> Dict[str, Any]:
-        return describe_webhook_schema()
+        schema = describe_webhook_schema()
+        schema["remediation"] = self._remediation_status()
+        return schema
 
     def _validate_secret(self, headers: Dict[str, str]) -> None:
         expected = self.settings.workflow_shared_secret
@@ -146,6 +149,19 @@ class IncidentAgentApplication:
             if key.lower() == name.lower():
                 return value
         return ""
+
+    def _remediation_status(self) -> Dict[str, Any]:
+        return {
+            "mode": (
+                "mutating"
+                if self.settings.enable_cache_purge or self.settings.enable_redeploy
+                else "diagnostics_only"
+            ),
+            "playbooks": {
+                "cloudflare_cache_purge": self.settings.enable_cache_purge,
+                "known_good_redeploy": self.settings.enable_redeploy,
+            },
+        }
 
     def _redact_incident(self, incident: Dict[str, Any]) -> Dict[str, Any]:
         redacted = dict(incident)
