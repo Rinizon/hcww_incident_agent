@@ -81,6 +81,8 @@ class IncidentStore:
                       inputs_json TEXT NOT NULL,
                       result_json TEXT NOT NULL,
                       verification_json TEXT NOT NULL,
+                      status TEXT NOT NULL DEFAULT 'completed',
+                      error TEXT,
                       started_at TEXT NOT NULL,
                       completed_at TEXT NOT NULL,
                       FOREIGN KEY (incident_id) REFERENCES incidents (incident_id)
@@ -90,6 +92,30 @@ class IncidentStore:
                     ON incidents (source_event_id);
                     """
                 )
+                self._ensure_column(
+                    connection,
+                    table_name="action_attempts",
+                    column_name="status",
+                    definition="TEXT NOT NULL DEFAULT 'completed'",
+                )
+                self._ensure_column(
+                    connection,
+                    table_name="action_attempts",
+                    column_name="error",
+                    definition="TEXT",
+                )
+
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        existing_columns = {row["name"] for row in rows}
+        if column_name not in existing_columns:
+            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def health(self) -> Dict[str, str]:
         with self._connect() as connection:
@@ -344,7 +370,7 @@ class IncidentStore:
             threshold = (
                 datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
             ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            query += " AND completed_at >= ?"
+            query += " AND COALESCE(NULLIF(completed_at, ''), started_at) >= ?"
             params.append(threshold)
 
         with self._connect() as connection:
@@ -368,6 +394,78 @@ class IncidentStore:
                     details=details,
                 )
 
+    def start_action_attempt(
+        self,
+        incident_id: int,
+        playbook_name: str,
+        action_type: str,
+        inputs: Dict[str, Any],
+    ) -> int:
+        now = utc_now_iso()
+        with self._lock:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO action_attempts (
+                      incident_id,
+                      playbook_name,
+                      action_type,
+                      inputs_json,
+                      result_json,
+                      verification_json,
+                      status,
+                      error,
+                      started_at,
+                      completed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        incident_id,
+                        playbook_name,
+                        action_type,
+                        json.dumps(inputs, sort_keys=True),
+                        json.dumps({}, sort_keys=True),
+                        json.dumps({}, sort_keys=True),
+                        "started",
+                        None,
+                        now,
+                        "",
+                    ),
+                )
+                return int(cursor.lastrowid)
+
+    def complete_action_attempt(
+        self,
+        action_id: int,
+        status: str,
+        result: Dict[str, Any],
+        verification: Dict[str, Any],
+        error: Optional[str] = None,
+    ) -> None:
+        now = utc_now_iso()
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE action_attempts
+                    SET
+                      status = ?,
+                      result_json = ?,
+                      verification_json = ?,
+                      error = ?,
+                      completed_at = ?
+                    WHERE action_id = ?
+                    """,
+                    (
+                        status,
+                        json.dumps(result, sort_keys=True),
+                        json.dumps(verification, sort_keys=True),
+                        error,
+                        now,
+                        action_id,
+                    ),
+                )
+
     def record_action_attempt(
         self,
         incident_id: int,
@@ -377,33 +475,20 @@ class IncidentStore:
         result: Dict[str, Any],
         verification: Dict[str, Any],
     ) -> None:
-        now = utc_now_iso()
-        with self._lock:
-            with self._connect() as connection:
-                connection.execute(
-                    """
-                    INSERT INTO action_attempts (
-                      incident_id,
-                      playbook_name,
-                      action_type,
-                      inputs_json,
-                      result_json,
-                      verification_json,
-                      started_at,
-                      completed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        incident_id,
-                        playbook_name,
-                        action_type,
-                        json.dumps(inputs, sort_keys=True),
-                        json.dumps(result, sort_keys=True),
-                        json.dumps(verification, sort_keys=True),
-                        now,
-                        now,
-                    ),
-                )
+        action_id = self.start_action_attempt(
+            incident_id=incident_id,
+            playbook_name=playbook_name,
+            action_type=action_type,
+            inputs=inputs,
+        )
+        final_status = self._derive_action_status(result, verification)
+        self.complete_action_attempt(
+            action_id=action_id,
+            status=final_status,
+            result=result,
+            verification=verification,
+            error=result.get("reason") if not result.get("ok") else None,
+        )
 
     def list_action_attempts(self, incident_id: int) -> List[Dict[str, Any]]:
         with self._connect() as connection:
@@ -427,11 +512,22 @@ class IncidentStore:
                     "inputs": json.loads(row["inputs_json"]),
                     "result": json.loads(row["result_json"]),
                     "verification": json.loads(row["verification_json"]),
+                    "status": row["status"],
+                    "error": row["error"],
                     "started_at": row["started_at"],
                     "completed_at": row["completed_at"],
                 }
             )
         return attempts
+
+    def _derive_action_status(
+        self, result: Dict[str, Any], verification: Dict[str, Any]
+    ) -> str:
+        if not result.get("ok"):
+            return "failed"
+        if verification.get("outcome_status") == "resolved":
+            return "verified"
+        return "succeeded"
 
     def _insert_audit_event(
         self,

@@ -277,15 +277,36 @@ class RemediationEngine:
         verification = diagnostics_result
 
         for step in steps:
-            action_result = self._run_step(incident, step)
+            action_id = self._start_step_attempt(incident, step)
+            action_error = None
+            try:
+                action_result = self._run_step(incident, step)
+            except Exception as exc:  # pragma: no cover - exercised by fake clients in tests
+                action_error = str(exc)
+                action_result = {
+                    "ok": False,
+                    "reason": f"remediation action failed: {exc}",
+                }
             verification = self.diagnostics.run(incident)
+            action_status = self._derive_step_status(action_result, verification)
+            if action_id is not None:
+                self._complete_step_attempt(
+                    action_id=action_id,
+                    status=action_status,
+                    result=action_result,
+                    verification=verification,
+                    error=action_error,
+                )
             attempts.append(
                 {
+                    "action_id": action_id,
                     "playbook": step["playbook"],
                     "action_type": step["action_type"],
                     "inputs": step["inputs"],
                     "result": action_result,
                     "verification": verification,
+                    "status": action_status,
+                    "error": action_error,
                 }
             )
             if action_result.get("ok") and verification["outcome_status"] == "resolved":
@@ -313,6 +334,45 @@ class RemediationEngine:
             assert self.deploy is not None
             return self.deploy.trigger_redeploy(incident)
         return {"ok": False, "reason": f"Unknown action type {step['action_type']}"}
+
+    def _start_step_attempt(
+        self, incident: Dict[str, Any], step: Dict[str, Any]
+    ) -> Optional[int]:
+        if self.store is None:
+            return None
+        return self.store.start_action_attempt(
+            incident_id=incident["incident_id"],
+            playbook_name=step["playbook"],
+            action_type=step["action_type"],
+            inputs=step["inputs"],
+        )
+
+    def _complete_step_attempt(
+        self,
+        action_id: int,
+        status: str,
+        result: Dict[str, Any],
+        verification: Dict[str, Any],
+        error: Optional[str],
+    ) -> None:
+        if self.store is None:
+            return
+        self.store.complete_action_attempt(
+            action_id=action_id,
+            status=status,
+            result=result,
+            verification=verification,
+            error=error or (result.get("reason") if not result.get("ok") else None),
+        )
+
+    def _derive_step_status(
+        self, action_result: Dict[str, Any], verification: Dict[str, Any]
+    ) -> str:
+        if not action_result.get("ok"):
+            return "failed"
+        if verification.get("outcome_status") == "resolved":
+            return "verified"
+        return "succeeded"
 
     def _build_step(
         self,

@@ -40,6 +40,26 @@ class FakeDeployClient(DeployClient):
         return {"ok": True, "action": "redeploy", "incident_id": incident["incident_id"]}
 
 
+class InspectingCloudflareClient(CloudflareClient):
+    def __init__(self, app: IncidentAgentApplication) -> None:
+        self.app = app
+        self.started_before_mutation = False
+
+    def purge_cache(self, urls: list) -> dict:
+        attempts = self.app.store.list_action_attempts(1)
+        self.started_before_mutation = (
+            len(attempts) == 1
+            and attempts[0]["playbook_name"] == "cloudflare_cache_purge"
+            and attempts[0]["status"] == "started"
+        )
+        return {"ok": True, "action": "cache_purge", "urls": urls}
+
+
+class RaisingCloudflareClient(CloudflareClient):
+    def purge_cache(self, urls: list) -> dict:
+        raise RuntimeError("Cloudflare API unavailable")
+
+
 class ApplicationTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -292,8 +312,80 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertEqual(self.notifier.sent_messages[-1]["payload"]["phase"], "resolved")
         self.assertEqual(len(body["incident"]["action_attempts"]), 1)
         self.assertEqual(body["incident"]["action_attempts"][0]["playbook_name"], "cloudflare_cache_purge")
+        self.assertEqual(body["incident"]["action_attempts"][0]["status"], "verified")
         self.assertEqual(len(self.cloudflare.calls), 1)
         self.assertEqual(self.deploy.calls, 0)
+
+    def test_remediation_attempt_is_started_before_external_mutation(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+        inspecting_cloudflare = InspectingCloudflareClient(self.app)
+        self.remediation.cloudflare = inspecting_cloudflare
+
+        status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        self.assertTrue(inspecting_cloudflare.started_before_mutation)
+        self.assertEqual(body["incident"]["action_attempts"][0]["status"], "verified")
+
+    def test_remediation_exception_leaves_failed_attempt_record(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=os.path.join(self.temp_dir.name, "failed_action.db"),
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            admin_shared_secret="admin-secret",
+            teams_post_mode="workflow",
+            teams_webhook_url="",
+            smoke_check_url="",
+            smoke_check_expected_text="Hill Country Web Works",
+            max_remediation_attempts=1,
+            enable_cache_purge=True,
+            enable_redeploy=False,
+        )
+        diagnostics = DiagnosticEngine(
+            settings=settings,
+            fetch=self.fake_fetch,
+            resolve=self.fake_resolve,
+        )
+        remediation = RemediationEngine(
+            settings=settings,
+            diagnostics=diagnostics,
+            cloudflare=RaisingCloudflareClient(),
+            deploy=FakeDeployClient(),
+        )
+        app = IncidentAgentApplication(
+            settings=settings,
+            diagnostics=diagnostics,
+            notifier=TeamsNotifier(settings=settings),
+            remediation=remediation,
+        )
+        remediation.store = app.store
+        payload = self.load_fixture("edge_down.json")
+        payload["betterstack"]["monitor_url"] = "https://down.hcww.net/"
+        payload["betterstack"]["raw_body"] = "Cloudflare 523 origin unreachable"
+
+        status_code, body = app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+        self.assertEqual(status_code, 202)
+        persisted = app.get_incident(body["incident"]["incident_id"])
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        attempt = persisted["action_attempts"][0]
+        self.assertEqual(attempt["status"], "failed")
+        self.assertEqual(attempt["error"], "Cloudflare API unavailable")
+        self.assertIn("Cloudflare API unavailable", attempt["result"]["reason"])
 
     def test_webhook_escalates_when_dns_fails(self) -> None:
         payload = self.load_fixture("dns_failure.json")

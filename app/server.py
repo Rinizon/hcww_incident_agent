@@ -269,14 +269,6 @@ class IncidentAgentApplication:
 
             remediation_result = self.remediation.execute(incident, diagnostic_results)
             for step in remediation_result["steps"]:
-                self.store.record_action_attempt(
-                    incident_id=incident["incident_id"],
-                    playbook_name=step["playbook"],
-                    action_type=step["action_type"],
-                    inputs=step["inputs"],
-                    result=step["result"],
-                    verification=step["verification"],
-                )
                 self.store.add_audit_event(
                     incident_id=incident["incident_id"],
                     event_type="incident.remediation_attempted",

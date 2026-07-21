@@ -225,7 +225,7 @@ The current implementation includes:
 - duplicate event suppression by `event_id`
 - per-playbook retry limits
 - cooldown-based remediation loop protection
-- persisted action attempts
+- persisted action attempts with `started`, `failed`, `succeeded`, and `verified` statuses
 - persisted audit trail for notifier and lifecycle events
 - playbook feature flags for risky actions
 
