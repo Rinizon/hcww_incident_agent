@@ -85,6 +85,9 @@ class IncidentStore:
                       completed_at TEXT NOT NULL,
                       FOREIGN KEY (incident_id) REFERENCES incidents (incident_id)
                     );
+
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_source_event_id
+                    ON incidents (source_event_id);
                     """
                 )
 
@@ -101,7 +104,9 @@ class IncidentStore:
             ).fetchone()
             return self._row_to_incident(row) if row else None
 
-    def upsert_incident(self, payload: Dict[str, Any], classification: Dict[str, Any]) -> Dict[str, Any]:
+    def claim_incident_event(
+        self, payload: Dict[str, Any], classification: Dict[str, Any]
+    ) -> Dict[str, Any]:
         now = utc_now_iso()
         external_key = payload["external_incident_key"]
         betterstack = payload["betterstack"]
@@ -113,6 +118,29 @@ class IncidentStore:
 
         with self._lock:
             with self._connect() as connection:
+                duplicate = connection.execute(
+                    """
+                    SELECT incident_id
+                    FROM incidents
+                    WHERE source_event_id = ?
+                    """,
+                    (payload["event_id"],),
+                ).fetchone()
+                if duplicate:
+                    incident_id = int(duplicate["incident_id"])
+                    self._insert_audit_event(
+                        connection=connection,
+                        incident_id=incident_id,
+                        event_type="incident.duplicate_ignored",
+                        summary="Duplicate workflow event ignored",
+                        details={"event_id": payload["event_id"]},
+                        created_at=now,
+                    )
+                    return {
+                        "outcome": "duplicate",
+                        "incident": self.get_incident(incident_id, connection=connection),
+                    }
+
                 existing = connection.execute(
                     """
                     SELECT incident_id, current_status, created_at
@@ -255,7 +283,15 @@ class IncidentStore:
                     created_at=now,
                 )
 
-                return self.get_incident(incident_id, connection=connection)
+                return {
+                    "outcome": "created" if created else "updated",
+                    "incident": self.get_incident(incident_id, connection=connection),
+                }
+
+    def upsert_incident(
+        self, payload: Dict[str, Any], classification: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return self.claim_incident_event(payload, classification)["incident"]
 
     def transition_incident_status(
         self,

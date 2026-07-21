@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.classifier import classify_incident
@@ -341,6 +342,48 @@ class ApplicationTestCase(unittest.TestCase):
         self.assertTrue(second_body["duplicate"])
         self.assertIsNone(second_body["classification"])
         self.assertEqual(second_body["incident"]["incident_id"], first_body["incident"]["incident_id"])
+        self.assertEqual(len(self.notifier.sent_messages), 3)
+        self.assertEqual(self.fetch_calls, {"https://hcww.net/": 1})
+
+        audit_lookup = self.app.get_incident_audit(first_body["incident"]["incident_id"])
+        duplicate_events = [
+            event
+            for event in audit_lookup["audit_events"]
+            if event["event_type"] == "incident.duplicate_ignored"
+        ]
+        diagnostics_events = [
+            event
+            for event in audit_lookup["audit_events"]
+            if event["event_type"] == "incident.diagnostics_completed"
+        ]
+        self.assertEqual(len(duplicate_events), 1)
+        self.assertEqual(len(diagnostics_events), 1)
+
+    def test_concurrent_duplicate_event_is_processed_once(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        encoded = json.dumps(payload).encode("utf-8")
+
+        def submit() -> tuple[int, dict]:
+            return self.app.handle_webhook(
+                headers={"X-HCWW-Workflow-Secret": "test-secret"},
+                body=encoded,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: submit(), range(2)))
+
+        statuses = [status for status, _body in results]
+        bodies = [body for _status, body in results]
+        duplicate_count = sum(1 for body in bodies if body.get("duplicate"))
+        processed_count = sum(1 for body in bodies if not body.get("duplicate"))
+        incident_ids = {body["incident"]["incident_id"] for body in bodies}
+
+        self.assertEqual(statuses, [202, 202])
+        self.assertEqual(duplicate_count, 1)
+        self.assertEqual(processed_count, 1)
+        self.assertEqual(len(incident_ids), 1)
+        self.assertEqual(len(self.notifier.sent_messages), 3)
+        self.assertEqual(self.fetch_calls, {"https://hcww.net/": 1})
 
     def test_repeated_incident_with_recent_attempts_hits_cooldown(self) -> None:
         payload = self.load_fixture("edge_down.json")

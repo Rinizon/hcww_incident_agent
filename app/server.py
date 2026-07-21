@@ -61,25 +61,20 @@ class IncidentAgentApplication:
                     "reason": "self_generated_agent_message",
                 },
             )
-        duplicate = self.store.get_incident_by_source_event_id(validated["event_id"])
-        if duplicate is not None:
-            self.store.add_audit_event(
-                incident_id=duplicate["incident_id"],
-                event_type="incident.duplicate_ignored",
-                summary="Duplicate workflow event ignored",
-                details={"event_id": validated["event_id"]},
-            )
+        classification = classify_incident(validated)
+        claim = self.store.claim_incident_event(validated, classification)
+        if claim["outcome"] == "duplicate":
             return (
                 HTTPStatus.ACCEPTED,
                 {
                     "status": "accepted",
                     "duplicate": True,
                     "classification": None,
-                    "incident": duplicate,
+                    "incident": claim["incident"],
                 },
             )
-        classification = classify_incident(validated)
-        incident = self.store.upsert_incident(validated, classification)
+
+        incident = claim["incident"]
         incident = self._process_incident(incident)
         return (
             HTTPStatus.ACCEPTED,
