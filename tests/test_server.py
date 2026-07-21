@@ -4,6 +4,8 @@ import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.classifier import classify_incident
@@ -24,6 +26,7 @@ from app.server import IncidentAgentApplication, create_http_handler
 from app.schema import PayloadValidationError, validation_example_payload
 from app.structured_logging import StructuredLogger
 from tools.drill_agent import SCENARIOS, evaluate_result, list_scenarios, load_payload, run_scenario
+from tools.retention import main as retention_main
 
 
 class FakeCloudflareClient(CloudflareClient):
@@ -182,6 +185,34 @@ class ApplicationTestCase(unittest.TestCase):
             for line in self.log_stream.getvalue().splitlines()
             if line.strip()
         ]
+
+    def age_incident_rows(self, incident_id: int, timestamp: str) -> None:
+        with self.app.store._connect() as connection:
+            connection.execute(
+                """
+                UPDATE incidents
+                SET created_at = ?, updated_at = ?, resolved_at = ?
+                WHERE incident_id = ?
+                """,
+                (timestamp, timestamp, timestamp, incident_id),
+            )
+            connection.execute(
+                "UPDATE audit_events SET created_at = ? WHERE incident_id = ?",
+                (timestamp, incident_id),
+            )
+            connection.execute(
+                """
+                UPDATE action_attempts
+                SET started_at = ?, completed_at = ?
+                WHERE incident_id = ?
+                """,
+                (timestamp, timestamp, incident_id),
+            )
+
+    def count_rows(self, table_name: str) -> int:
+        with self.app.store._connect() as connection:
+            row = connection.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+            return int(row["count"])
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -609,6 +640,13 @@ class ApplicationTestCase(unittest.TestCase):
                 db_path=os.path.join(self.temp_dir.name, "missing_workflow_secret.db"),
                 env="production",
                 workflow_shared_secret="",
+            )
+
+    def test_settings_reject_non_positive_retention_days(self) -> None:
+        with self.assertRaises(ValueError):
+            Settings(
+                db_path=os.path.join(self.temp_dir.name, "bad_retention.db"),
+                retention_days=0,
             )
 
     def test_legacy_betterstack_secret_env_var_is_used_for_workflow_auth(self) -> None:
@@ -1142,6 +1180,124 @@ class ApplicationTestCase(unittest.TestCase):
             escalated[-1]["details"]["reason"],
             "Global remediation kill switch is enabled",
         )
+
+    def test_retention_preview_reports_without_deleting_rows(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        _status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        incident_id = body["incident"]["incident_id"]
+        self.app.store.record_action_attempt(
+            incident_id=incident_id,
+            playbook_name="manual_check",
+            action_type="noop",
+            inputs={},
+            result={"ok": True},
+            verification={"outcome_status": "resolved"},
+        )
+        self.age_incident_rows(incident_id, "2026-01-01T00:00:00Z")
+
+        preview = self.app.store.cleanup_retention(
+            retention_days=30,
+            apply=False,
+            now=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        )
+
+        self.assertFalse(preview["applied"])
+        self.assertEqual(preview["counts"]["incidents"], 1)
+        self.assertEqual(preview["counts"]["action_attempts"], 1)
+        self.assertGreater(preview["counts"]["audit_events"], 0)
+        self.assertIsNotNone(self.app.get_incident(incident_id))
+        self.assertEqual(self.count_rows("action_attempts"), 1)
+
+    def test_retention_apply_deletes_old_terminal_incidents_child_first(self) -> None:
+        payload = self.load_fixture("edge_down.json")
+        _status_code, body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(payload).encode("utf-8"),
+        )
+        incident_id = body["incident"]["incident_id"]
+        self.app.store.record_action_attempt(
+            incident_id=incident_id,
+            playbook_name="manual_check",
+            action_type="noop",
+            inputs={},
+            result={"ok": True},
+            verification={"outcome_status": "resolved"},
+        )
+        self.age_incident_rows(incident_id, "2026-01-01T00:00:00Z")
+
+        result = self.app.store.cleanup_retention(
+            retention_days=30,
+            apply=True,
+            now=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        )
+
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["counts"]["incidents"], 1)
+        self.assertEqual(self.count_rows("action_attempts"), 0)
+        self.assertEqual(self.count_rows("audit_events"), 0)
+        self.assertEqual(self.count_rows("incidents"), 0)
+
+    def test_retention_preserves_recent_and_active_incidents(self) -> None:
+        recent_payload = self.load_fixture("edge_down.json")
+        recent_payload["event_id"] = "evt_recent_retention"
+        recent_payload["betterstack"]["alert_id"] = "alert-recent-retention"
+        recent_payload["betterstack"]["incident_id"] = "incident-recent-retention"
+        _recent_status, recent_body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(recent_payload).encode("utf-8"),
+        )
+        active_payload = self.load_fixture("edge_down.json")
+        active_payload["event_id"] = "evt_active_retention"
+        active_payload["betterstack"]["alert_id"] = "alert-active-retention"
+        active_payload["betterstack"]["incident_id"] = "incident-active-retention"
+        _active_status, active_body = self.app.handle_webhook(
+            headers={"X-HCWW-Workflow-Secret": "test-secret"},
+            body=json.dumps(active_payload).encode("utf-8"),
+        )
+        active_id = active_body["incident"]["incident_id"]
+        with self.app.store._connect() as connection:
+            connection.execute(
+                """
+                UPDATE incidents
+                SET current_status = 'remediating',
+                    created_at = ?,
+                    updated_at = ?,
+                    resolved_at = NULL
+                WHERE incident_id = ?
+                """,
+                ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", active_id),
+            )
+
+        result = self.app.store.cleanup_retention(
+            retention_days=30,
+            apply=True,
+            now=datetime(2026, 7, 21, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["counts"]["incidents"], 0)
+        self.assertIsNotNone(self.app.get_incident(recent_body["incident"]["incident_id"]))
+        self.assertIsNotNone(self.app.get_incident(active_id))
+
+    def test_retention_cli_previews_by_default(self) -> None:
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = retention_main(
+                [
+                    "--db-path",
+                    os.path.join(self.temp_dir.name, "retention_cli.db"),
+                    "--retention-days",
+                    "30",
+                ]
+            )
+
+        body = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(body["retention"]["applied"])
+        self.assertEqual(body["retention"]["retention_days"], 30)
 
     def test_webhook_redeploys_when_cache_purge_does_not_recover(self) -> None:
         payload = self.load_fixture("edge_down.json")

@@ -56,6 +56,7 @@ Safety-sensitive settings:
 - `HCWW_MAX_PLAYBOOK_RETRIES`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS`
 - `HCWW_MAX_WEBHOOK_BODY_BYTES`
+- `HCWW_RETENTION_DAYS`
 - `HCWW_REMEDIATION_DISABLED`
 - `HCWW_ENABLE_CACHE_PURGE`
 - `HCWW_ENABLE_REDEPLOY`
@@ -86,6 +87,7 @@ Recommended production starting values:
 - `HCWW_MAX_PLAYBOOK_RETRIES=1`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS=300`
 - `HCWW_MAX_WEBHOOK_BODY_BYTES=65536`
+- `HCWW_RETENTION_DAYS=90`
 - `HCWW_REMEDIATION_DISABLED=false`
 - `HCWW_ENABLE_CACHE_PURGE=false`
 - `HCWW_ENABLE_REDEPLOY=false`
@@ -131,6 +133,12 @@ Run the service:
 
 ```bash
 python3 app.py
+```
+
+Preview retention cleanup:
+
+```bash
+python3 tools/retention.py --retention-days 90
 ```
 
 Run with Docker:
@@ -379,6 +387,34 @@ Tracked counters cover:
 These counters are intentionally process-local. Treat them as lightweight
 operational visibility, not a durable audit source.
 
+## Retention Cleanup
+
+Use the retention tool to keep the SQLite data volume bounded. It previews by
+default and only deletes when `--apply` is present.
+
+Preview using configured `HCWW_RETENTION_DAYS`:
+
+```bash
+python3 tools/retention.py
+```
+
+Apply cleanup:
+
+```bash
+python3 tools/retention.py --apply
+```
+
+Cleanup removes:
+
+- terminal `resolved` and `escalated` incidents older than the retention cutoff
+- audit rows older than the retention cutoff
+- action attempts older than the retention cutoff
+- all child audit and action rows for incidents deleted by retention
+
+Recent incidents and non-terminal incidents are preserved. Back up the SQLite
+data volume before the first production `--apply` run and after any retention
+policy change.
+
 ## Operational Guardrails
 
 The current implementation includes:
@@ -393,6 +429,7 @@ The current implementation includes:
 - structured JSON logs for incident lifecycle and request rejection events
 - admin-secret-protected runtime metrics and health-summary counters
 - a global remediation kill switch through `HCWW_REMEDIATION_DISABLED`
+- preview-first retention cleanup through `tools/retention.py`
 - playbook feature flags for risky actions
 
 ## Routine Operator Checks
@@ -401,6 +438,7 @@ The current implementation includes:
 - Review current process counters via `GET /metrics`
 - Review redacted audit history for escalated incidents
 - Confirm the SQLite database file is retained and backed up appropriately for the environment
+- Run `python3 tools/retention.py` before applying scheduled cleanup
 - Check that Teams delivery is still functioning after any workflow or connector changes
 - Revalidate Cloudflare and deploy credentials after rotation
 

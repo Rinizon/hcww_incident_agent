@@ -119,10 +119,140 @@ class IncidentStore:
         if column_name not in existing_columns:
             connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
+    def _count_retained_action_attempts(
+        self,
+        connection: sqlite3.Connection,
+        cutoff: str,
+        incident_ids: List[int],
+    ) -> int:
+        query = """
+            SELECT COUNT(*) AS count
+            FROM action_attempts
+            WHERE COALESCE(NULLIF(completed_at, ''), started_at) < ?
+        """
+        params: List[Any] = [cutoff]
+        if incident_ids:
+            placeholders = ",".join("?" for _ in incident_ids)
+            query += f" OR incident_id IN ({placeholders})"
+            params.extend(incident_ids)
+        row = connection.execute(query, tuple(params)).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _count_retained_audit_events(
+        self,
+        connection: sqlite3.Connection,
+        cutoff: str,
+        incident_ids: List[int],
+    ) -> int:
+        query = """
+            SELECT COUNT(*) AS count
+            FROM audit_events
+            WHERE created_at < ?
+        """
+        params: List[Any] = [cutoff]
+        if incident_ids:
+            placeholders = ",".join("?" for _ in incident_ids)
+            query += f" OR incident_id IN ({placeholders})"
+            params.extend(incident_ids)
+        row = connection.execute(query, tuple(params)).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _delete_retained_action_attempts(
+        self,
+        connection: sqlite3.Connection,
+        cutoff: str,
+        incident_ids: List[int],
+    ) -> None:
+        query = """
+            DELETE FROM action_attempts
+            WHERE COALESCE(NULLIF(completed_at, ''), started_at) < ?
+        """
+        params: List[Any] = [cutoff]
+        if incident_ids:
+            placeholders = ",".join("?" for _ in incident_ids)
+            query += f" OR incident_id IN ({placeholders})"
+            params.extend(incident_ids)
+        connection.execute(query, tuple(params))
+
+    def _delete_retained_audit_events(
+        self,
+        connection: sqlite3.Connection,
+        cutoff: str,
+        incident_ids: List[int],
+    ) -> None:
+        query = """
+            DELETE FROM audit_events
+            WHERE created_at < ?
+        """
+        params: List[Any] = [cutoff]
+        if incident_ids:
+            placeholders = ",".join("?" for _ in incident_ids)
+            query += f" OR incident_id IN ({placeholders})"
+            params.extend(incident_ids)
+        connection.execute(query, tuple(params))
+
     def health(self) -> Dict[str, str]:
         with self._connect() as connection:
             connection.execute("SELECT 1").fetchone()
         return {"database": "ok"}
+
+    def cleanup_retention(
+        self,
+        retention_days: int,
+        apply: bool = False,
+        now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        if retention_days <= 0:
+            raise ValueError("retention_days must be greater than zero")
+        effective_now = now or datetime.now(timezone.utc)
+        cutoff = (effective_now - timedelta(days=retention_days)).replace(
+            microsecond=0
+        ).isoformat().replace("+00:00", "Z")
+
+        with self._lock:
+            with self._connect() as connection:
+                incident_rows = connection.execute(
+                    """
+                    SELECT incident_id
+                    FROM incidents
+                    WHERE current_status IN ('resolved', 'escalated')
+                      AND COALESCE(resolved_at, updated_at, created_at) < ?
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                incident_ids = [int(row["incident_id"]) for row in incident_rows]
+                action_count = self._count_retained_action_attempts(
+                    connection,
+                    cutoff,
+                    incident_ids,
+                )
+                audit_count = self._count_retained_audit_events(
+                    connection,
+                    cutoff,
+                    incident_ids,
+                )
+                result = {
+                    "applied": apply,
+                    "retention_days": retention_days,
+                    "cutoff": cutoff,
+                    "counts": {
+                        "action_attempts": action_count,
+                        "audit_events": audit_count,
+                        "incidents": len(incident_ids),
+                    },
+                }
+                if not apply:
+                    return result
+
+                self._delete_retained_action_attempts(connection, cutoff, incident_ids)
+                self._delete_retained_audit_events(connection, cutoff, incident_ids)
+                if incident_ids:
+                    placeholders = ",".join("?" for _ in incident_ids)
+                    connection.execute(
+                        f"DELETE FROM incidents WHERE incident_id IN ({placeholders})",
+                        tuple(incident_ids),
+                    )
+                return result
 
     def claim_incident_event(
         self, payload: Dict[str, Any], classification: Dict[str, Any]

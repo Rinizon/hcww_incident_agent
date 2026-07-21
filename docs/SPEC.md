@@ -33,6 +33,8 @@ Status: Complete.
 
 ## Step 4: Add Incident and Audit Retention Controls
 
+Status: Complete.
+
 - Add configurable retention settings for resolved/escalated incidents and audit rows, such as `HCWW_RETENTION_DAYS`.
 - Implement a store cleanup method that deletes old action attempts, audit events, and incidents in the correct order.
 - Add a safe CLI command or tool mode to preview and apply cleanup.

@@ -96,6 +96,7 @@ class Settings:
     max_remediation_attempts: int = field(default_factory=lambda: int(_env("HCWW_MAX_REMEDIATION_ATTEMPTS", "2")))
     max_playbook_retries: int = field(default_factory=lambda: int(_env("HCWW_MAX_PLAYBOOK_RETRIES", "1")))
     remediation_cooldown_seconds: int = field(default_factory=lambda: int(_env("HCWW_REMEDIATION_COOLDOWN_SECONDS", "300")))
+    retention_days: int = field(default_factory=lambda: int(_env("HCWW_RETENTION_DAYS", "90")))
     remediation_disabled: bool = field(default_factory=lambda: _env_bool("HCWW_REMEDIATION_DISABLED"))
     enable_cache_purge: bool = field(default_factory=lambda: _env_bool("HCWW_ENABLE_CACHE_PURGE"))
     enable_redeploy: bool = field(default_factory=lambda: _env_bool("HCWW_ENABLE_REDEPLOY"))
@@ -119,6 +120,8 @@ class Settings:
         )
         if self.max_webhook_body_bytes <= 0:
             raise ValueError("HCWW_MAX_WEBHOOK_BODY_BYTES must be greater than zero")
+        if self.retention_days <= 0:
+            raise ValueError("HCWW_RETENTION_DAYS must be greater than zero")
 
     @property
     def allowed_public_origin_values(self) -> tuple[str, ...]:
