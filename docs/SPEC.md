@@ -1,40 +1,39 @@
-# Environment Template Spec
+# Docker Data Volume Spec
 
 ## Goal
 
-Add a tracked, secret-free `.env.example` so operators can create a valid local
-or production `.env` without copying from an existing secret-bearing file.
+Make Docker startup work out of the box on a fresh VM without requiring manual
+ownership fixes for a host bind-mounted `./data` directory.
 
-The repository currently documents that `.env` must be populated, but `.env` is
-ignored and no safe template is tracked. This creates a setup gap and increases
-the chance that secrets or container-only paths get copied around manually.
+The previous Compose setup mounted `./data:/app/data` while the container ran as
+the non-root `hcww` user. On a VM, that host directory can be owned by a
+different UID, causing SQLite startup to fail with `unable to open database
+file`. A Docker-managed named volume avoids host UID mismatch while preserving
+database durability.
 
-## Step 1: Add A Secret-Free Template
-
-Status: Complete.
-
-- Add `.env.example` at the repository root.
-- Include all runtime settings documented in the runbook.
-- Use safe local defaults where possible.
-- Use obvious placeholder values for secrets and integration URLs.
-- Keep mutating playbooks disabled by default.
-
-## Step 2: Document Template Usage
+## Step 1: Use A Docker-Managed Named Volume
 
 Status: Complete.
 
-- Update `README.md` to tell operators to copy `.env.example` to `.env`.
-- Update `docs/OPERATIONS.md` to reference `.env.example` before describing
-  production credential population.
-- Keep `.env` ignored and excluded from Docker builds.
+- Replace the host bind mount with a named volume mounted at `/app/data`.
+- Keep `HCWW_AGENT_DB_PATH=/app/data/agent_state.db` in Compose.
+- Define the named volume at the top level of `docker-compose.yml`.
 
-## Step 3: Add Template Coverage
+## Step 2: Update Operator Documentation
 
 Status: Complete.
 
-- Add packaging-hardening tests that assert `.env.example` exists.
-- Assert the template includes important safety and credential settings.
-- Assert the template does not contain known local secret values.
+- Update Docker deployment notes to describe the named volume.
+- Remove the requirement to make host `./data` writable by the container user.
+- Update backup guidance to copy the database out of the running/stopped
+  Compose service instead of assuming a host path.
+
+## Step 3: Update Tests
+
+Status: Complete.
+
+- Update packaging-hardening tests to assert Compose uses the named volume.
+- Keep tests proving the local `.env.example` uses a host-relative DB path.
 
 ## Step 4: Validate And Publish
 
@@ -47,9 +46,10 @@ Status: Complete.
 
 ## Acceptance Criteria
 
-- A new operator can run `cp .env.example .env` as their starting point.
-- No real secrets are committed.
-- `.env` remains ignored.
+- `docker compose up -d --build` no longer depends on host `./data` ownership.
+- SQLite still writes to persistent `/app/data` storage inside the container.
+- Backup documentation explains how to retrieve the database from the Compose
+  service or named volume.
 - Tests pass.
 
 ## Validation Results

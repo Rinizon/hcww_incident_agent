@@ -158,7 +158,9 @@ class PackagingHardeningTestCase(unittest.TestCase):
         self.assertIn("env_file:", compose)
         self.assertIn("- .env", compose)
         self.assertIn("HCWW_AGENT_DB_PATH: /app/data/agent_state.db", compose)
-        self.assertIn("./data:/app/data", compose)
+        self.assertIn("hcww-agent-data:/app/data", compose)
+        self.assertIn("volumes:", compose)
+        self.assertIn("hcww-agent-data:", compose)
 
     def test_operations_runbook_documents_production_runtime_patterns(self) -> None:
         runbook = (self.project_root / "docs" / "OPERATIONS.md").read_text()

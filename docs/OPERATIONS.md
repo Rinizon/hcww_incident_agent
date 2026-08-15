@@ -113,9 +113,9 @@ are HCWW-owned public HTTPS surfaces and do not point at private, local, or
 internal services.
 
 For Docker Compose, `docker-compose.yml` overrides `HCWW_AGENT_DB_PATH` to
-`/app/data/agent_state.db` and mounts host `./data` at `/app/data`. For direct
-host startup with `python3 app.py`, use a host path such as
-`data/agent_state.db` in `.env`.
+`/app/data/agent_state.db` and mounts a Docker-managed named volume at
+`/app/data`. For direct host startup with `python3 app.py`, use a host path such
+as `data/agent_state.db` in `.env`.
 
 Allowed origin change process:
 
@@ -358,7 +358,7 @@ Before enabling unattended production remediation:
 - Confirm `/healthz` reports shared-secret workflow auth, a valid `request_policy`, the expected `url_policy`, and diagnostics-only remediation mode.
 - Confirm operators know how to set `HCWW_REMEDIATION_DISABLED=true` and restart or redeploy the service during an emergency.
 - Confirm `.dockerignore` excludes `.env`, `.git`, `data/`, caches, and local artifacts from image builds.
-- Confirm the container runs as the non-root `hcww` user and only `/app/data` needs persistent write access.
+- Confirm the container runs as the non-root `hcww` user and stores SQLite state on the Docker-managed `/app/data` volume.
 - Confirm `HCWW_ALLOWED_PUBLIC_ORIGINS` contains only HCWW-owned public HTTPS origins.
 - Confirm the reverse proxy terminates TLS, enforces body/time limits, writes safe access logs, and restricts admin endpoints.
 - Confirm admin incident and audit endpoints return redacted payloads.
@@ -466,11 +466,11 @@ The repository now includes:
 Container-specific requirements:
 
 - set `HCWW_AGENT_HOST=0.0.0.0`
-- mount `/app/data` persistently
+- mount the Docker-managed `hcww-agent-data` volume at `/app/data`
 - keep `.env` available at the project root for `docker compose` runtime injection
 - keep `.env`, `.git`, `data/`, caches, and local artifacts out of the image build context through `.dockerignore`
 - run the application as the non-root `hcww` user created by the image
-- ensure the host `./data` directory is writable by the container user before production deployment
+- avoid host bind mounts for SQLite unless the host directory ownership is managed explicitly
 
 Recommended server-side validation:
 
@@ -553,7 +553,12 @@ Backup checklist:
 
 1. Set `HCWW_REMEDIATION_DISABLED=true`.
 2. Stop the service or pause inbound webhook delivery.
-3. Copy `data/agent_state.db` to encrypted storage with a timestamped filename.
+3. Copy `/app/data/agent_state.db` from the Compose service to encrypted storage with a timestamped filename:
+
+```bash
+docker compose cp incident-agent:/app/data/agent_state.db ./agent_state.$(date -u +%Y%m%dT%H%M%SZ).db
+```
+
 4. Record the app version, commit SHA, `HCWW_RETENTION_DAYS`, and backup time.
 5. Restart the service and confirm `GET /healthz` returns `status=ok`.
 

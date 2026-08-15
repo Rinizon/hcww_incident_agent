@@ -12,4 +12,7 @@ services:
     ports:
       - "8787:8787"
     volumes:
-      - ./data:/app/data
+      - hcww-agent-data:/app/data
+
+volumes:
+  hcww-agent-data:

@@ -71,8 +71,9 @@ python3 app.py
 ```
 
 For direct host startup, keep `HCWW_AGENT_DB_PATH` host-relative, such as
-`data/agent_state.db`. Docker Compose supplies its own container path. Replace
-all placeholder secrets before using production mode.
+`data/agent_state.db`. Docker Compose supplies its own container path and stores
+SQLite state in a Docker-managed named volume. Replace all placeholder secrets
+before using production mode.
 
 ### Docker run
 
