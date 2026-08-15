@@ -128,6 +128,23 @@ class PackagingHardeningTestCase(unittest.TestCase):
 
         self.assertNotIn(".dockerignore", gitignore)
 
+    def test_env_example_documents_required_runtime_settings_without_real_secrets(self) -> None:
+        env_example_path = self.project_root / ".env.example"
+        env_example = env_example_path.read_text()
+
+        self.assertTrue(env_example_path.exists())
+        self.assertIn("HCWW_AGENT_DB_PATH=data/agent_state.db", env_example)
+        self.assertIn("TEAMS_WORKFLOW_SHARED_SECRET=replace-with-random-workflow-secret", env_example)
+        self.assertIn("HCWW_ADMIN_SHARED_SECRET=replace-with-random-admin-secret", env_example)
+        self.assertIn("CLOUDFLARE_API_TOKEN=replace-with-cloudflare-token", env_example)
+        self.assertIn("HCWW_DEPLOY_BASE_URL=https://deploy.example.com/replace-with-deploy-hook", env_example)
+        self.assertIn("HCWW_REMEDIATION_DISABLED=false", env_example)
+        self.assertIn("HCWW_ENABLE_CACHE_PURGE=false", env_example)
+        self.assertIn("HCWW_ENABLE_REDEPLOY=false", env_example)
+        self.assertNotIn("/app/data/agent_state.db", env_example)
+        self.assertNotIn("sk_", env_example)
+        self.assertNotIn("Bearer ", env_example)
+
     def test_dockerfile_runs_as_non_root_user(self) -> None:
         dockerfile = (self.project_root / "Dockerfile").read_text()
 

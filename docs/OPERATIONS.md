@@ -44,7 +44,15 @@ The incident agent is responsible for:
 
 ## Environment Variables
 
-Populate the values in [`.env`](/Users/rkane/repos/hcww_incident_agent/.env).
+Create local runtime configuration from the tracked template, then populate the
+values in [`.env`](/Users/rkane/repos/hcww_incident_agent/.env):
+
+```bash
+cp .env.example .env
+```
+
+Never commit `.env`; it is intentionally ignored and excluded from Docker image
+builds.
 
 Safety-sensitive settings:
 
@@ -289,7 +297,7 @@ Agent update payload fields:
 
 ## Deployment Checklist
 
-1. Create the production `.env` with real Teams, Better Stack, Cloudflare, and deploy credentials.
+1. Copy `.env.example` to `.env`, then add real Teams, Better Stack, Cloudflare, and deploy credentials.
 2. Validate the Teams workflow can reach the agent endpoint.
 3. Confirm `GET /healthz` succeeds from the runtime host.
 4. Trigger a controlled test incident from Better Stack or a fixture-driven synthetic workflow payload.

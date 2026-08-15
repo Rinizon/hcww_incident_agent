@@ -60,12 +60,19 @@ Incoming Better Stack workflow payloads are now:
 
 ### Local run
 
+Create local runtime configuration from the template:
+
+```bash
+cp .env.example .env
+```
+
 ```bash
 python3 app.py
 ```
 
 For direct host startup, keep `HCWW_AGENT_DB_PATH` host-relative, such as
-`data/agent_state.db`. Docker Compose supplies its own container path.
+`data/agent_state.db`. Docker Compose supplies its own container path. Replace
+all placeholder secrets before using production mode.
 
 ### Docker run
 
