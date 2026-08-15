@@ -8,6 +8,7 @@ services:
     environment:
       HCWW_AGENT_HOST: 0.0.0.0
       HCWW_AGENT_PORT: 8787
+      HCWW_AGENT_DB_PATH: /app/data/agent_state.db
     ports:
       - "8787:8787"
     volumes:

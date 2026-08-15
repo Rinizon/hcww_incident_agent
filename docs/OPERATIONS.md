@@ -83,6 +83,7 @@ Diagnostic-specific settings:
 
 Recommended production starting values:
 
+- `HCWW_AGENT_DB_PATH=data/agent_state.db` for direct host startup
 - `HCWW_MAX_REMEDIATION_ATTEMPTS=2`
 - `HCWW_MAX_PLAYBOOK_RETRIES=1`
 - `HCWW_REMEDIATION_COOLDOWN_SECONDS=300`
@@ -102,6 +103,11 @@ The agent rejects webhook monitor URLs, smoke-check URLs, core route URLs, and
 redirect targets outside this allowlist. Only add origins after confirming they
 are HCWW-owned public HTTPS surfaces and do not point at private, local, or
 internal services.
+
+For Docker Compose, `docker-compose.yml` overrides `HCWW_AGENT_DB_PATH` to
+`/app/data/agent_state.db` and mounts host `./data` at `/app/data`. For direct
+host startup with `python3 app.py`, use a host path such as
+`data/agent_state.db` in `.env`.
 
 Allowed origin change process:
 

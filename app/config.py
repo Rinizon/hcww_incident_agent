@@ -13,6 +13,9 @@ from app.url_policy import (
 
 
 def _load_dotenv() -> None:
+    skip_dotenv = os.environ.get("HCWW_SKIP_DOTENV", "").strip().lower()
+    if skip_dotenv in {"1", "true", "yes", "on"}:
+        return
     candidate_paths = [
         Path.cwd() / ".env",
         Path(__file__).resolve().parent.parent / ".env",

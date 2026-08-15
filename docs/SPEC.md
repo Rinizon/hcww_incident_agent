@@ -1,75 +1,66 @@
-# Production Readiness Implementation Spec
+# Runtime Path Remediation Spec
 
 ## Goal
 
-Move the HCWW incident agent from a hardened release candidate to an operator-friendly production service. The work focuses on observability, operational control, retention, staging drills, and clearer escalation behavior that can be implemented in this repository.
+Make local host startup and Docker startup use SQLite database paths that match
+their own filesystems.
 
-## Step 1: Add Structured JSON Logging
+The current local `.env` points `HCWW_AGENT_DB_PATH` at `/app/data/agent_state.db`,
+which is correct inside the Docker container but invalid for direct host startup
+with `python3 app.py`. Docker should own the `/app/data` path, while local
+development should default to `data/agent_state.db` under the repository.
 
-Status: Complete.
-
-- Add a small logging helper that emits JSON records to stdout with timestamp, level, event name, incident ID when available, and redacted details.
-- Log webhook acceptance/rejection, duplicate suppression, diagnostic completion, remediation start/completion, escalation, and Teams update queuing.
-- Reuse the existing redaction helper before logging details that may include payload fragments, headers, URLs, or action results.
-- Add tests for log shape and redaction of sensitive fields.
-
-## Step 2: Add Runtime Metrics and a Metrics Endpoint
+## Step 1: Move The Docker DB Path Into Compose
 
 Status: Complete.
 
-- Track in-memory counters for incident intake, duplicate events, auth failures, request-policy rejects, URL-policy rejects, diagnostics outcomes, remediation attempts, remediation successes/failures, and escalations.
-- Add `GET /metrics` as an admin-secret-protected JSON endpoint.
-- Include a compact metrics summary in `/healthz` without exposing sensitive incident data.
-- Add tests proving counters increment on success, duplicate, rejection, remediation, and escalation paths.
+- Set `HCWW_AGENT_DB_PATH=/app/data/agent_state.db` in `docker-compose.yml`
+  under the service `environment` block.
+- Keep the existing `./data:/app/data` volume mapping.
+- Add or update a packaging hardening test proving compose declares the
+  container database path explicitly.
 
-## Step 3: Add a Global Remediation Kill Switch
-
-Status: Complete.
-
-- Add `HCWW_REMEDIATION_DISABLED`, defaulting to `false`.
-- When enabled, force all mutating playbooks off even if cache purge or redeploy flags are true.
-- Show kill-switch state in `/healthz` and schema output.
-- Add tests proving remediation is skipped, incidents escalate with a clear reason, and no action attempts are recorded when the switch is active.
-
-## Step 4: Add Incident and Audit Retention Controls
+## Step 2: Restore Local `.env` Host DB Path
 
 Status: Complete.
 
-- Add configurable retention settings for resolved/escalated incidents and audit rows, such as `HCWW_RETENTION_DAYS`.
-- Implement a store cleanup method that deletes old action attempts, audit events, and incidents in the correct order.
-- Add a safe CLI command or tool mode to preview and apply cleanup.
-- Add tests for retention cutoff behavior and preservation of recent incidents.
+- Update the local `.env` database path to `data/agent_state.db`.
+- Do not alter secrets or unrelated operator runtime settings.
+- Confirm direct local startup can create/open the SQLite file under the repo.
 
-## Step 5: Improve Escalation Guidance
-
-Status: Complete.
-
-- Add incident-type-specific operator guidance for DNS, edge, availability, contact-path, deploy failure, third-party outage, and unknown incidents.
-- Include the recommended next step in Teams update payloads and audit details when an incident escalates.
-- Keep messages concise and redacted while still including the strongest diagnostic evidence.
-- Add tests for escalation guidance selection by incident type and failure mode.
-
-## Step 6: Extend the Drill Harness for Replay and Staging
+## Step 3: Document Local And Docker Path Ownership
 
 Status: Complete.
 
-- Add a `--payload-file` option to replay a specific fixture or captured redacted payload.
-- Add a `--dry-run` or `--print-payload` mode to inspect the outbound request before posting.
-- Add stricter validation output for expected incident status, action count, duplicate handling, and required audit events.
-- Add tests for payload-file replay, dry-run behavior, and failure reporting.
+- Update `README.md` so local startup notes that `HCWW_AGENT_DB_PATH` should be
+  host-relative, such as `data/agent_state.db`.
+- Update `docs/OPERATIONS.md` to explain that Docker Compose overrides
+  `HCWW_AGENT_DB_PATH` to `/app/data/agent_state.db` while mounting host
+  `./data`.
+- Keep production safety settings and remediation defaults unchanged.
 
-## Step 7: Document Production Runtime Patterns
+## Step 4: Validate Both Runtime Paths
 
 Status: Complete.
 
-- Update `README.md` and `docs/OPERATIONS.md` with structured logs, metrics, kill switch, retention, and replay workflow.
-- Add examples for reverse proxy expectations: TLS termination, request timeouts, access logs, and optional source IP restrictions.
-- Add a secret rotation runbook for workflow, admin, Cloudflare, and deploy credentials.
-- Add a backup/restore drill checklist for the SQLite data volume.
+- Run the unit test suite.
+- Start the service directly with `python3 app.py` and confirm `/healthz`
+  returns `status=ok`.
+- Stop the local server after the smoke check.
+- Confirm no tracked secret files are added.
 
-## Validation
+## Acceptance Criteria
 
-- Run `python3 -m unittest discover -s tests` after each implementation step.
-- Keep each step independently committable and reversible.
-- Confirm `/healthz`, `/schema/webhooks/teams/betterstack`, and any new admin endpoints remain redacted.
-- Confirm mutating playbooks stay disabled unless explicitly enabled and not blocked by the kill switch.
+- `python3 app.py` works from the repo using the local `.env`.
+- `docker-compose.yml` explicitly sets the container database path.
+- Documentation names which path belongs to host startup versus Docker startup.
+- Tests pass after the path ownership change.
+
+## Validation Results
+
+Status: Complete.
+
+- `python3 -m unittest discover -s tests` passes.
+- `python3 app.py` starts from the repo with the local `.env`.
+- `/healthz` returns `status=ok` while reflecting production-mode `.env`
+  settings.

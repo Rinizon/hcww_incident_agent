@@ -7,6 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict, Optional
+
+os.environ["HCWW_SKIP_DOTENV"] = "1"
 
 from app.classifier import classify_incident
 from app.config import Settings
@@ -38,6 +41,35 @@ from tools.drill_agent import (
     run_scenario,
 )
 from tools.retention import main as retention_main
+
+
+ENV_SENSITIVE_KEYS = (
+    "HCWW_AGENT_ENV",
+    "HCWW_REMEDIATION_DISABLED",
+    "HCWW_ENABLE_CACHE_PURGE",
+    "HCWW_ENABLE_REDEPLOY",
+    "HCWW_SMOKE_CHECK_URL",
+    "HCWW_CORE_SMOKE_URLS",
+    "HCWW_CONTACT_FORM_EXPECTED_ACTION",
+    "TEAMS_WORKFLOW_SHARED_SECRET",
+    "TEAMS_WORKFLOW_SECRET_HEADER",
+    "BETTERSTACK_WEBHOOK_SHARED_SECRET",
+)
+
+
+def clear_env_sensitive_keys() -> Dict[str, Optional[str]]:
+    original_values = {key: os.environ.get(key) for key in ENV_SENSITIVE_KEYS}
+    for key in ENV_SENSITIVE_KEYS:
+        os.environ.pop(key, None)
+    return original_values
+
+
+def restore_env_sensitive_keys(original_values: Dict[str, Optional[str]]) -> None:
+    for key, value in original_values.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 class FakeCloudflareClient(CloudflareClient):
@@ -108,6 +140,7 @@ class PackagingHardeningTestCase(unittest.TestCase):
 
         self.assertIn("env_file:", compose)
         self.assertIn("- .env", compose)
+        self.assertIn("HCWW_AGENT_DB_PATH: /app/data/agent_state.db", compose)
         self.assertIn("./data:/app/data", compose)
 
     def test_operations_runbook_documents_production_runtime_patterns(self) -> None:
@@ -129,6 +162,7 @@ class PackagingHardeningTestCase(unittest.TestCase):
 
 class ApplicationTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self.original_env = clear_env_sensitive_keys()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.temp_dir.name, "agent_state.db")
         self.settings = Settings(
@@ -243,6 +277,7 @@ class ApplicationTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+        restore_env_sensitive_keys(self.original_env)
 
     def post_webhook_http(
         self,
@@ -1737,9 +1772,28 @@ class ApplicationTestCase(unittest.TestCase):
             deploy_mode="api",
             deploy_base_url="https://deploy.example.com/hooks/redeploy",
             deploy_api_token="deploy-token",
+            enable_redeploy=True,
         )
         client = build_deploy_client(settings)
         self.assertEqual(type(client).__name__, "RealDeployClient")
+
+    def test_build_deploy_client_requires_redeploy_enablement(self) -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            db_path=self.db_path,
+            env="test",
+            service_name="hcww",
+            actor_email="incident-agent@hcww.local",
+            public_base_url="https://agent.example.com",
+            workflow_shared_secret="test-secret",
+            deploy_mode="api",
+            deploy_base_url="https://deploy.example.com/hooks/redeploy",
+            deploy_api_token="deploy-token",
+            enable_redeploy=False,
+        )
+        client = build_deploy_client(settings)
+        self.assertEqual(type(client).__name__, "NullDeployClient")
 
     def test_webhook_notifier_sends_text_payload(self) -> None:
         captured = {}
@@ -1897,6 +1951,7 @@ class ApplicationTestCase(unittest.TestCase):
             deploy_mode="deploy_hook",
             deploy_base_url="https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/hook-123",
             deploy_api_token="",
+            enable_redeploy=True,
         )
         client = build_deploy_client(settings)
         self.assertEqual(type(client).__name__, "RealDeployClient")

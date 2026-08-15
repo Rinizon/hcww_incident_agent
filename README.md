@@ -64,6 +64,9 @@ Incoming Better Stack workflow payloads are now:
 python3 app.py
 ```
 
+For direct host startup, keep `HCWW_AGENT_DB_PATH` host-relative, such as
+`data/agent_state.db`. Docker Compose supplies its own container path.
+
 ### Docker run
 
 ```bash
@@ -73,8 +76,12 @@ docker compose up -d --build
 ### Tests
 
 ```bash
-python3 -m unittest discover -s tests
+HCWW_SKIP_DOTENV=1 python3 -m unittest discover -s tests
 ```
+
+`HCWW_SKIP_DOTENV=1` keeps unit tests independent from local operator settings
+in `.env`. Normal service startup with `python3 app.py` and Docker still loads
+`.env` for runtime configuration.
 
 ### Supervised drills
 
